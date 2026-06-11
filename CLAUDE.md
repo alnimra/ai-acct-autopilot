@@ -15,10 +15,18 @@ Architecture deep-dive: `docs/how-it-works.md`. Read it before non-trivial work.
 
 ## Commands
 
-- Test: `node bin/ai-acct-autopilot.js --test-decision` (must stay green; add
-  a check when you change decision logic, never a tautology).
+- Test: `npm test` = unit (`--test-decision`) + sandboxed e2e (`test/e2e.js`).
+  Both must stay green; add a check when you change behavior, never a tautology.
+- Coverage gate: `npm run coverage` (c8 via npx, ≥90% lines on `bin/**`).
 - Safe manual run: `node bin/ai-acct-autopilot.js --once --no-switch --plain`.
 - Anything without `--no-switch` can REALLY switch the user's active accounts.
+- The e2e suite runs everything in throwaway `$HOME` sandboxes: fake
+  `claude-acct`/`osascript` on PATH, a local TLS mock behind the `AI_ACCT_*`
+  URL seams, and fake `ps`/`lsof` (`AI_ACCT_PS_BIN`/`AI_ACCT_LSOF_BIN`) so
+  restart logic can NEVER see or signal real codex sessions. Keep it that way:
+  a new scenario must not touch real credentials, network, or processes. The
+  mock server must stay out-of-process (the suite uses `spawnSync`, which
+  blocks the event loop — an in-process mock deadlocks until probe timeouts).
 
 ## Invariants (violating these breaks real overnight workloads)
 

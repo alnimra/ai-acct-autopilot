@@ -19,7 +19,9 @@
     "darwin"
   ],
   "scripts": {
-    "test": "node bin/ai-acct-autopilot.js --test-decision"
+    "test": "node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js",
+    "test:unit": "node bin/ai-acct-autopilot.js --test-decision",
+    "coverage": "npx -y c8 --include 'bin/**' --reporter=text --check-coverage --lines 90 sh -c 'node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js'"
   },
   "keywords": [
     "claude",

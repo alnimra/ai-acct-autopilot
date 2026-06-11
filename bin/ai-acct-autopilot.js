@@ -45,7 +45,13 @@ const CODEX_SESSIONS = path.join(HOME, '.codex', 'sessions');
 const usageStats = require('./usage-stats'); // local-log cost/token stats (account-independent)
 // Claude Code CLI's public OAuth client — same client the CLI itself uses.
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+// AI_ACCT_* overrides exist for non-standard installs and the sandboxed e2e
+// suite (test/e2e.js); production behavior is the default on every one.
+const OAUTH_TOKEN_URL = process.env.AI_ACCT_OAUTH_URL || 'https://console.anthropic.com/v1/oauth/token';
+const WHAM_USAGE_URL = process.env.AI_ACCT_WHAM_URL || 'https://chatgpt.com/backend-api/wham/usage';
+const PS_BIN = process.env.AI_ACCT_PS_BIN || '/bin/ps';
+const LSOF_BIN = process.env.AI_ACCT_LSOF_BIN || '/usr/sbin/lsof';
+const CODEX_BIN_OVERRIDE = process.env.AI_ACCT_CODEX_BIN || null;
 const CODEX_USAGE_MAX_AGE_MS = 30 * 60_000;  // stale usage never drives a switch
 // shim constants live up here: subcommand blocks run at module top-level and
 // call into shim helpers before later const declarations would initialize (TDZ)
@@ -90,7 +96,9 @@ const THRESHOLD = Math.min(50, Math.max(1, opt('--threshold', 5)));
 const COOLDOWN_MS = Math.max(1, opt('--cooldown', 10)) * 60_000;
 const ONCE = flag('--once');
 const NO_SWITCH = flag('--no-switch');
-const PLAIN = flag('--plain') || !process.stdout.isTTY;
+// AI_ACCT_FORCE_ANSI: e2e seam — exercise the interactive render path against
+// a pipe (no pty on macOS CI). Never set in production.
+const PLAIN = flag('--plain') || (!process.stdout.isTTY && !process.env.AI_ACCT_FORCE_ANSI);
 
 // ---------- ansi ----------
 const ansi = !PLAIN;
@@ -388,7 +396,7 @@ function codexSavedAccounts() {
 function codexProbeUsage(token) {
   return new Promise((resolve) => {
     if (!token) { resolve({ ok: false, status: 0 }); return; }
-    https.get('https://chatgpt.com/backend-api/wham/usage', {
+    https.get(WHAM_USAGE_URL, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/json' }, timeout: 15_000,
     }, (res) => {
       let b = '';
@@ -672,22 +680,27 @@ if (argv[0] === 'codex-list') {
 // account exists, swap auth.json BEFORE the new codex process starts.
 // Fail-open and quiet: any problem → exit 0 so codex always launches.
 if (argv[0] === 'codex-ensure') {
-  try {
-    const usage = codexUsage();
-    const id = codexIdentity(readJson(CODEX_AUTH));
-    if (!usage || !usage.fresh || !id || !id.email) process.exit(0);
-    if (usage.worst === null || usage.worst < 100 - THRESHOLD) process.exit(0);
-    if (now() - lastSwitchTs('codex') < COOLDOWN_MS) process.exit(0);
-    const target = codexPickTarget(id.email);
-    if (!target) process.exit(0);
-    const r = codexUse(target.name);
-    if (r.ok) {
-      journalAppend({ provider: 'codex', event: 'switch', from: id.email, to: target.name, reason: `launch ensure: ${id.email} ${Math.round(100 - usage.worst)}% left` });
-      notify('ai-acct-autopilot: Codex switched at launch', `${id.email} → ${target.name}`);
-      if (!flag('--quiet')) console.error(`[ai-acct-autopilot] codex account switched: ${id.email} → ${target.name}`);
-    }
-  } catch {}
-  process.exit(0);
+  (async () => {
+    try {
+      const usage = codexUsage();
+      const id = codexIdentity(readJson(CODEX_AUTH));
+      if (!usage || !usage.fresh || !id || !id.email) process.exit(0);
+      if (usage.worst === null || usage.worst < 100 - THRESHOLD) process.exit(0);
+      if (now() - lastSwitchTs('codex') < COOLDOWN_MS) process.exit(0);
+      // Live-probe saved accounts before picking (never switch into unprobed
+      // usage). Only reached when the active account is hot, so the probe
+      // latency lands exactly on the launches a switch would rescue.
+      const target = codexPickTarget(id.email, await codexProbeAll());
+      if (!target) process.exit(0);
+      const r = codexUse(target.name);
+      if (r.ok) {
+        journalAppend({ provider: 'codex', event: 'switch', from: id.email, to: target.name, reason: `launch ensure: ${id.email} ${Math.round(100 - usage.worst)}% left` });
+        notify('ai-acct-autopilot: Codex switched at launch', `${id.email} → ${target.name}`);
+        if (!flag('--quiet')) console.error(`[ai-acct-autopilot] codex account switched: ${id.email} → ${target.name}`);
+      }
+    } catch {}
+    process.exit(0);
+  })();
 }
 
 // codex-shim: wrap the real codex binary as a SUPERVISOR. Every launch runs
@@ -774,7 +787,7 @@ if (argv[0] === 'codex-supervise') { codexSupervise(); }
 // descendant) is what holds the rollout file open.
 async function codexRunningProcs() {
   const state = readJson(SHIM_STATE) || {};
-  const r = await run('/bin/ps', ['-axo', 'pid=,ppid=,command=']);
+  const r = await run(PS_BIN, ['-axo', 'pid=,ppid=,command=']);
   const byPid = new Map();
   for (const line of r.stdout.split('\n')) {
     const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
@@ -798,7 +811,7 @@ async function codexRunningProcs() {
 // open by the native binary (or the launcher itself, version-dependent).
 async function codexSidOf(proc) {
   for (const pid of [proc.pid, ...proc.descendants]) {
-    const r = await run('/usr/sbin/lsof', ['-p', String(pid), '-Fn'], 10_000);
+    const r = await run(LSOF_BIN, ['-p', String(pid), '-Fn'], 10_000);
     const m = r.stdout.match(/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f-]{36})\.jsonl/);
     if (m) return m[1];
   }
@@ -832,11 +845,11 @@ async function codexRestartSessions(state) {
   }
   return { restarted, unsupervised };
 }
-function findRealCodex(candidates = [
+function findRealCodex(candidates = (CODEX_BIN_OVERRIDE ? [CODEX_BIN_OVERRIDE] : [
   '/opt/homebrew/bin/codex',
   path.join(HOME, '.bun', 'bin', 'codex'),
   '/usr/local/bin/codex',
-]) {
+])) {
   for (const p of candidates) {
     try {
       if (!fs.existsSync(p)) continue;
@@ -872,11 +885,17 @@ if (argv[0] === 'codex-shim') {
       if (cur.includes(`${SHIM_MARK} v3`)) { console.log('shim v3 already installed.'); process.exit(0); }
       realTarget = (state && state.realTarget) || null;   // upgrade older shim
       if (!realTarget) { console.error('shim state missing; run codex-shim uninstall first.'); process.exit(1); }
-    } else {
+    } else if (fs.lstatSync(found.binPath).isSymbolicLink()) {
       realTarget = fs.realpathSync(found.binPath);
+    } else {
+      // codex is a real file, not a symlink (direct-copy installs): move it
+      // aside so the shim never records ITSELF as the real target. A realpath
+      // comparison is NOT enough here (/var vs /private/var aliasing).
+      realTarget = `${found.binPath}.real`;
+      fs.renameSync(found.binPath, realTarget);
     }
     fs.writeFileSync(SHIM_STATE, JSON.stringify({ binPath: found.binPath, realTarget, installedAt: new Date().toISOString(), version: 3 }, null, 2));
-    fs.rmSync(found.binPath);
+    fs.rmSync(found.binPath, { force: true });
     fs.writeFileSync(found.binPath, shimScript(), { mode: 0o755 });
     console.log(`shim v3 (node supervisor) installed: ${found.binPath} → ensure + supervise → ${realTarget}`);
     console.log('On watcher-initiated account switches, supervised codex sessions auto-resume their threads.');
@@ -886,7 +905,8 @@ if (argv[0] === 'codex-shim') {
   if (sub === 'uninstall') {
     if (!found.isShim || !state || !state.realTarget) { console.log('shim not installed.'); process.exit(0); }
     fs.rmSync(found.binPath);
-    fs.symlinkSync(state.realTarget, found.binPath);
+    if (state.realTarget === `${found.binPath}.real`) fs.renameSync(state.realTarget, found.binPath);
+    else fs.symlinkSync(state.realTarget, found.binPath);
     console.log(`shim removed: ${found.binPath} → ${state.realTarget}`);
     process.exit(0);
   }
@@ -1212,6 +1232,11 @@ async function main() {
   };
 
   if (ONCE) { await runStats(); await tick(state); if (!PLAIN) process.stdout.write('\x1b[?25h'); return; }
+  // e2e seam: bounded interactive run that still flushes V8 coverage on exit
+  // (a signal kill would discard it). No effect unless the env var is set.
+  if (process.env.AI_ACCT_EXIT_AFTER_MS) {
+    setTimeout(() => { process.stdout.write('\x1b[?25h\x1b[0m\n'); process.exit(0); }, Number(process.env.AI_ACCT_EXIT_AFTER_MS));
+  }
 
   runStats();                              // background; rerenders when done
   setInterval(runStats, 5 * 60_000);       // refresh stats every 5 min
