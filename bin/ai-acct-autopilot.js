@@ -832,12 +832,11 @@ async function codexRestartSessions(state) {
   }
   return { restarted, unsupervised };
 }
-function findRealCodex() {
-  const candidates = [
-    '/opt/homebrew/bin/codex',
-    path.join(HOME, '.bun', 'bin', 'codex'),
-    '/usr/local/bin/codex',
-  ];
+function findRealCodex(candidates = [
+  '/opt/homebrew/bin/codex',
+  path.join(HOME, '.bun', 'bin', 'codex'),
+  '/usr/local/bin/codex',
+]) {
   for (const p of candidates) {
     try {
       if (!fs.existsSync(p)) continue;
@@ -847,6 +846,14 @@ function findRealCodex() {
     } catch {}
   }
   return null;
+}
+// Dashboard nudge: a codex login without the shim means switches strand
+// running sessions on the old account (openai/codex#17041). Nag only on a
+// positively-detected stock binary; unknown locations stay quiet.
+function shimHint(codexId, found) {
+  if (!codexId || !codexId.email) return null;
+  if (!found || found.isShim) return null;
+  return 'shim not installed — codex switches won\'t auto-resume sessions · run: ai-acct-autopilot codex-shim install';
 }
 if (argv[0] === 'codex-shim') {
   const sub = argv[1] || 'status';
@@ -958,6 +965,8 @@ function render(report, state) {
   if (!codexId || !codexId.email) {
     L.push(`  ${C.grey}no codex chatgpt login found (~/.codex/auth.json)${C.reset}`);
   } else {
+    const hint = shimHint(codexId, findRealCodex());
+    if (hint) L.push(`  ${C.amber}▲ ${hint}${C.reset}`);
     const probes = state.codexProbes || new Map();
     const plan = (usage && usage.plan) || codexId.plan;
     const emails = [codexId.email, ...codexSavedAccounts().filter((e) => e !== codexId.email)];
@@ -1152,6 +1161,30 @@ function testDecision() {
     b_unnamed: { ts: 1000, rl: { limit_name: null, primary: {} } },
   };
   check('codex: unnamed bucket preferred when no "codex" id', chooseBucket(buckets) === buckets.b_unnamed);
+
+  // shim hint: nag only when a codex login meets a positively-detected stock binary
+  const cid = { email: 'a@x.com' };
+  const nag = shimHint(cid, { binPath: '/x/codex', isShim: false });
+  check('hint: stock binary + login → nag names the fix', !!nag && nag.includes('codex-shim install'));
+  check('hint: shim installed → quiet', shimHint(cid, { binPath: '/x/codex', isShim: true }) === null);
+  check('hint: no codex binary found → quiet', shimHint(cid, null) === null);
+  check('hint: no codex login → quiet', shimHint(null, { binPath: '/x/codex', isShim: false }) === null);
+  check('hint: identity without email → quiet', shimHint({}, { binPath: '/x/codex', isShim: false }) === null);
+
+  // shim detection on disk (tmpdir; candidate list injected — real paths untouched)
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'aaa-shim-test-'));
+  try {
+    const stock = path.join(tdir, 'stock'); fs.writeFileSync(stock, '#!/bin/sh\necho codex\n');
+    const shim = path.join(tdir, 'shim'); fs.writeFileSync(shim, `#!/usr/bin/env node\n${SHIM_MARK} v3\n`);
+    const legacy = path.join(tdir, 'legacy'); fs.writeFileSync(legacy, `#!/usr/bin/env node\n${SHIM_MARK_LEGACY} v2\n`);
+    const link = path.join(tdir, 'link'); fs.symlinkSync(stock, link);
+    check('detect: real file without mark = stock', findRealCodex([stock]).isShim === false);
+    check('detect: shim mark = shim', findRealCodex([shim]).isShim === true);
+    check('detect: legacy mark = shim (upgrade in place)', findRealCodex([legacy]).isShim === true);
+    check('detect: symlink = stock (shim is written as a real file)', findRealCodex([link]).isShim === false);
+    check('detect: nothing found = null', findRealCodex([path.join(tdir, 'missing')]) === null);
+    check('detect: first candidate wins', findRealCodex([shim, stock]).binPath === shim);
+  } finally { fs.rmSync(tdir, { recursive: true, force: true }); }
 
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
