@@ -1,11 +1,11 @@
 # ai-acct-autopilot
 
-**A terminal dashboard + autopilot for multiple Claude Code and Codex accounts.**
-Watches usage across every account, auto-switches before you hit the wall, and
-resumes running sessions on the fresh account — so an overnight agent run never
-dies to a rate limit while you sleep.
+**A native macOS menu bar autopilot for multiple Claude Code and Codex accounts.**
+It watches every account, auto-switches before you hit the wall, and resumes
+running sessions on the fresh account — so an overnight agent run never dies to
+a rate limit while you sleep.
 
-![ai-acct-autopilot dashboard](assets/screenshot.png)
+![ai-acct-autopilot menu bar dropdown, with account emails blurred](assets/menubar-screenshot-redacted.png)
 
 ## Why
 
@@ -17,9 +17,9 @@ running sessions stall. Do it at your desk and it's annoying. Have it happen at
 
 `ai-acct-autopilot` automates the whole dance:
 
-- **One dashboard** for every Claude and Codex account: 5h / weekly / opus
-  bars, "% left", reset countdowns, usage trends — codexbar-style, in
-  your terminal.
+- **One menu bar view** for every Claude and Codex account: 5h / weekly / opus
+  bars, "% left", reset countdowns, usage trends, local cost estimates, and
+  recent switches — CodexBar-style, always visible on your Mac.
 - **Auto-switch at the threshold** (default <5% left on the 5h *or* weekly
   window): the healthiest account takes over, picked by live probed usage.
 - **Sessions keep running.** Claude sessions follow the switch automatically;
@@ -49,8 +49,9 @@ npm install -g ai-acct-autopilot
 git clone https://github.com/alnimra/ai-acct-autopilot && cd ai-acct-autopilot && ./install.sh
 ```
 
-This installs two commands: `ai-acct-autopilot` (the dashboard/autopilot) and
-`claude-acct` (the Claude account manager it builds on).
+This installs two commands: `ai-acct-autopilot` (the watcher, menu bar
+installer, and terminal dashboard) and `claude-acct` (the Claude account
+manager it builds on).
 
 ## Quick start
 
@@ -66,21 +67,20 @@ ai-acct-autopilot codex-add other@example.com
 # 3. Install the codex supervisor shim (enables auto-resume of running sessions):
 ai-acct-autopilot codex-shim install
 
-# 4. Run it. Leave it in a terminal.
-ai-acct-autopilot
+# 4. Install the native menu bar app. It starts now and at every login.
+ai-acct-autopilot menubar install
 ```
 
 That's it. When the active account drops below 5% left, the switch happens by
-itself, a macOS notification tells you about it, and the journal at the bottom
-of the dashboard keeps the receipts.
+itself, a macOS notification tells you about it, and the dropdown journal keeps
+the receipts.
 
-## Menu bar app (CodexBar-style)
+## Mac menu bar app (main UI)
 
-Prefer the menu bar to a terminal window? The same watcher runs as a native
-macOS status item — `✳ 53% ⌁ 90%` (% left for the active Claude / Codex
-account), with a dropdown showing every account's bars, reset countdowns,
-trends, the cost panel, recent switches, a live next-check ticker, and
-one-click manual switching.
+The normal way to run `ai-acct-autopilot` is the native macOS status item:
+`✳ 53% ⌁ 90%` (% left for the active Claude / Codex account). Its dropdown
+shows every account's bars, reset countdowns, trends, the cost panel, recent
+switches, a live next-check ticker, and one-click manual switching.
 
 **Install (you already have the npm package):**
 
@@ -113,8 +113,9 @@ missing, the alert in the dropdown installs it in one click.
 `menubar stop|status|uninstall` manage the npm-installed copy;
 `menubar install` again rebuilds after an update or a repo move.
 
-The menu bar app and the terminal dashboard share the same journal and
-cooldowns, so running both never double-switches.
+The terminal dashboard is still available with `ai-acct-autopilot` for SSH,
+logs, and debugging. It shares the same journal and cooldowns as the menu bar
+app, so running both never double-switches.
 
 **Maintainers — building the official DMG** (requires a "Developer ID
 Application" certificate and a stored notary profile):
@@ -156,14 +157,14 @@ add accounts with a plain `codex login`.
 
 | Command | What it does |
 |---|---|
-| `ai-acct-autopilot` | run the dashboard + autopilot (60s ticks) |
+| `ai-acct-autopilot menubar install\|status\|stop\|uninstall` | native menu bar app |
+| `ai-acct-autopilot` | run the terminal dashboard + autopilot (60s ticks) |
 | `ai-acct-autopilot --no-switch` | monitor only — shows the switch it WOULD make |
 | `ai-acct-autopilot --once --plain` | single tick, plain text (logging/cron) |
 | `ai-acct-autopilot codex-add <email>` | add a codex account via isolated login |
 | `ai-acct-autopilot codex-use <email>` | switch codex account (+ resume running sessions) |
 | `ai-acct-autopilot codex-list` / `codex-save` | list / snapshot codex accounts |
 | `ai-acct-autopilot codex-shim install\|status\|uninstall` | manage the supervisor shim |
-| `ai-acct-autopilot menubar install\|status\|stop\|uninstall` | native menu bar app |
 | `ai-acct-autopilot --test-decision` | run the decision-logic self-tests |
 | `claude-acct add\|save\|use\|list\|usage` | manage Claude accounts (by email) |
 

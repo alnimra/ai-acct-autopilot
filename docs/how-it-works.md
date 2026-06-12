@@ -1,8 +1,10 @@
 # How it works
 
-This document is the architecture deep-dive: what runs when, where every
-credential lives, which endpoints are touched, and why the Codex side needs a
-supervisor while the Claude side doesn't.
+This document is the architecture deep-dive behind the macOS menu bar app:
+what runs when, where every credential lives, which endpoints are touched, and
+why the Codex side needs a supervisor while the Claude side doesn't. The same
+watcher can still render a terminal dashboard, but the menu bar app is the main
+daily UI.
 
 ## The tick (every 60s)
 
@@ -144,7 +146,8 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 
 ## The menu bar app
 
-`menubar install` assembles `~/Applications/AI Acct Autopilot.app`, seals it
+This is the primary product surface. `menubar install` assembles
+`~/Applications/AI Acct Autopilot.app`, seals it
 (ad-hoc `codesign` of the whole bundle — a bare-signed binary inside an
 unsealed bundle gets SIGKILLed by taskgated on a fresh CDHash), and registers
 a LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch on crash

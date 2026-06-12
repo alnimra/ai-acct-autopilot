@@ -1,7 +1,7 @@
 {
   "name": "ai-acct-autopilot",
   "version": "1.1.0",
-  "description": "Terminal dashboard + autopilot for multiple Claude Code and Codex accounts: live usage bars, auto-switch before rate limits, sessions resumed on the fresh account.",
+  "description": "Native macOS menu bar autopilot for multiple Claude Code and Codex accounts: live usage bars, auto-switch before rate limits, sessions resumed on the fresh account.",
   "bin": {
     "ai-acct-autopilot": "bin/ai-acct-autopilot.js",
     "claude-acct": "bin/claude-acct"
@@ -38,6 +38,9 @@
     "account-switcher",
     "usage",
     "autopilot",
+    "macos",
+    "menu-bar",
+    "menubar",
     "cli",
     "dashboard"
   ],
