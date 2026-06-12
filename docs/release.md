@@ -41,13 +41,15 @@ Run these from the repo root:
 git status --short --branch
 npm test
 npm pack --dry-run
-npm run build:dmg -- --identity "Developer ID Application: Your Name (TEAMID)"
+xcrun notarytool store-credentials aaa-notary --apple-id you@example.com --team-id TEAMID
+npm run build:dmg -- --identity "Developer ID Application: Your Name (TEAMID)" --notary-profile aaa-notary
 spctl -a -vv -t open dist/AI-Acct-Autopilot-*.dmg
 ```
 
-For a public DMG, `spctl` must accept the artifact. A local test build signed
-with `Apple Development` proves packaging only; Gatekeeper rejects that on
-download and it must not be published.
+For a public DMG, `spctl` must accept the artifact after notarization and
+stapling. A local test build signed with `Apple Development`, or signed with
+Developer ID but not notarized, proves packaging only; Gatekeeper rejects that
+on download and it must not be published.
 
 ## Tag and watch
 
