@@ -159,15 +159,15 @@ quarantine attribute, so Gatekeeper stays out of it. Without the prebuilt
 (git clones) or with `--from-source`, `menubar/main.swift` (single file,
 AppKit only) is compiled locally with `swiftc`.
 
-There is also a maintainer-only standalone DMG build path, but current GitHub
-releases do not attach a public DMG. Once a maintainer has a Developer ID
-Application certificate and Apple notarization profile, `npm run build:dmg`
-can produce a signed, notarized, stapled DMG with the drag-to-Applications
-layout. That bundle ships no config.json — at launch the app discovers the npm
-package and node itself (well-known paths, then a login-shell `command -v`) and
-offers native "Start at login" registration (SMAppService) instead of a
-LaunchAgent. The app is deliberately a thin shell — every account, autopilot,
-and safety decision stays in the node watcher:
+The release workflow can also attach a standalone DMG when the maintainer has
+configured Developer ID signing and Apple notarization secrets. `npm run
+build:dmg` produces a signed, notarized, stapled DMG with the
+drag-to-Applications layout. That bundle ships no config.json — at launch the
+app uses its bundled CLI engine first, discovers a system Node 18+ runtime
+(well-known paths, then a login-shell `command -v`), and falls back to a global
+npm install if needed. It offers native "Start at login" registration
+(SMAppService) instead of a LaunchAgent. The app is deliberately a thin shell —
+every account, autopilot, and safety decision stays in the node watcher:
 
 - it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
   snapshot per tick from stdout (`menubarSnapshot()` — the same data

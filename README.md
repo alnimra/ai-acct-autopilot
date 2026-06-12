@@ -95,11 +95,16 @@ sealed, and registered as a launch agent. From a git clone — or with
 `menubar install --from-source` — the single-file AppKit app compiles locally
 with swiftc instead (`xcode-select --install`).
 
-**No public DMG yet:** the current release artifact is the npm tarball, so the
-supported user install path is `npm install -g ai-acct-autopilot` followed by
-`ai-acct-autopilot menubar install`. A drag-and-drop DMG build path exists for
-maintainers, but it is only publishable after a Developer ID certificate and
-Apple notarization profile are configured.
+**DMG releases:** GitHub releases attach a drag-and-drop DMG once the
+maintainer signing secrets are configured. The DMG is the easy Mac download for
+the menu bar app: it bundles the autopilot CLI engine and discovers a system
+Node 18+ runtime at launch. The npm path remains the fallback and the best
+option for people who want the CLI commands in their shell:
+
+```bash
+npm install -g ai-acct-autopilot
+ai-acct-autopilot menubar install
+```
 
 Day to day: Quit from the dropdown means quit (it returns at next login);
 restart any time with `ai-acct-autopilot menubar start` or Spotlight →
@@ -114,9 +119,17 @@ The terminal dashboard is still available with `ai-acct-autopilot` for SSH,
 logs, and debugging. It shares the same journal and cooldowns as the menu bar
 app, so running both never double-switches.
 
-**Maintainers — building an official DMG** (requires a "Developer ID
-Application" certificate and a stored notary profile; attach the resulting DMG
-to a GitHub release only after notarization succeeds):
+**Maintainers — DMG signing setup:** add these GitHub Actions secrets, then tag
+a release. The workflow imports the Developer ID cert, notarizes, staples, and
+attaches `AI-Acct-Autopilot-<version>.dmg` to the release:
+
+- `MACOS_CERTIFICATE_BASE64`: base64 of the Developer ID Application `.p12`
+- `MACOS_CERTIFICATE_PASSWORD`: password for that `.p12`
+- `APPLE_ID`: Apple ID used for notarization
+- `APPLE_TEAM_ID`: Apple Developer team ID
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for notarytool
+
+Local maintainer build:
 
 ```bash
 xcrun notarytool store-credentials aaa-notary --apple-id you@x.com --team-id TEAMID   # once

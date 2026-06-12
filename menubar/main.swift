@@ -14,7 +14,8 @@
 //
 // Tool paths come from Resources/config.json (baked at build time by the
 // CLI installer — launch agents get no user PATH). When there is no config
-// (the standalone DMG build), the npm package is discovered at runtime.
+// (the standalone DMG build), the app uses its bundled CLI engine first, then
+// falls back to a global npm install.
 // Colors mirror the terminal palette: red means "needs the user", amber
 // means "handled".
 
@@ -269,16 +270,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       return
     }
     standalone = true
-    configError = "ai-acct-autopilot npm package not found — run: npm install -g ai-acct-autopilot"
+    configError = "Node.js not found — install Node 18+ or run: npm install -g ai-acct-autopilot"
   }
 
-  // The standalone DMG app finds the npm package + node on its own.
+  // The standalone DMG app finds its bundled CLI engine + node on its own.
   func discoverConfig() -> Config? {
     let fm = FileManager.default
     let home = NSHomeDirectory()
     let resolve = { (p: String) -> String in (try? fm.destinationOfSymbolicLink(atPath: p)).map {
       $0.hasPrefix("/") ? $0 : ((p as NSString).deletingLastPathComponent as NSString).appendingPathComponent($0)
     } ?? p }
+    let discoverNode = { () -> String? in
+      if let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node"].first(where: { fm.isExecutableFile(atPath: $0) }) {
+        return node
+      }
+      return self.shellWhich("node")
+    }
+    if let resources = Bundle.main.resourceURL?.path {
+      let bundledScript = resources + "/engine/bin/ai-acct-autopilot.js"
+      let bundledClaudeAcct = resources + "/engine/bin/claude-acct"
+      if fm.fileExists(atPath: bundledScript), let node = discoverNode() {
+        return Config(node: node, script: bundledScript, claudeAcct: bundledClaudeAcct, version: nil, builtAt: nil)
+      }
+    }
     var script: String?
     for c in [
       "/opt/homebrew/lib/node_modules/ai-acct-autopilot/bin/ai-acct-autopilot.js",
@@ -286,8 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       home + "/.local/bin/ai-acct-autopilot",
     ] where fm.fileExists(atPath: c) { script = resolve(c); break }
     if script == nil, let w = shellWhich("ai-acct-autopilot") { script = resolve(w) }
-    var node: String? = ["/opt/homebrew/bin/node", "/usr/local/bin/node"].first { fm.isExecutableFile(atPath: $0) }
-    if node == nil { node = shellWhich("node") }
+    let node = discoverNode()
     guard let s = script, let n = node else { return nil }
     let scriptDir = (s as NSString).deletingLastPathComponent
     let claudeAcct = [home + "/.local/bin/claude-acct", scriptDir + "/claude-acct"]

@@ -15,9 +15,9 @@
 //   Without it the DMG is signed but NOT notarized: macOS 15+ refuses
 //   un-notarized browser downloads outright, so notarize before publishing.
 //
-// The DMG app ships WITHOUT a baked config.json — it discovers the npm
-// package + node at runtime (see discoverConfig() in menubar/main.swift) and
-// tells the user to `npm install -g ai-acct-autopilot` if missing.
+// The DMG app ships WITHOUT a baked config.json. It bundles this package's CLI
+// engine in Contents/Resources/engine, then discovers a system Node runtime at
+// launch (see discoverConfig() in menubar/main.swift).
 'use strict';
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -28,6 +28,8 @@ const VERSION = require(path.join(ROOT, 'package.json')).version;
 const DIST = path.join(ROOT, 'dist');
 const STAGE = path.join(DIST, 'stage');
 const APP = path.join(STAGE, 'AI Acct Autopilot.app');
+const RESOURCES = path.join(APP, 'Contents', 'Resources');
+const ENGINE = path.join(RESOURCES, 'engine');
 const DMG = path.join(DIST, `AI-Acct-Autopilot-${VERSION}.dmg`);
 
 const arg = (name) => {
@@ -35,6 +37,11 @@ const arg = (name) => {
   return i >= 0 ? process.argv[i + 1] : null;
 };
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', stdio: opts.quiet ? 'pipe' : 'inherit', ...opts });
+const copyDir = (src, dst) => {
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.cpSync(src, dst, { recursive: true });
+};
 
 if (process.platform !== 'darwin') { console.error('build-dmg: macOS only'); process.exit(1); }
 
@@ -61,9 +68,14 @@ sh(process.execPath, [path.join(__dirname, 'build-menubar.js')]);
 // 2. assemble the standalone bundle — no config.json on purpose
 fs.rmSync(STAGE, { recursive: true, force: true });
 fs.mkdirSync(path.join(APP, 'Contents', 'MacOS'), { recursive: true });
-fs.mkdirSync(path.join(APP, 'Contents', 'Resources'), { recursive: true });
+fs.mkdirSync(RESOURCES, { recursive: true });
 fs.copyFileSync(path.join(ROOT, 'menubar', 'prebuilt', 'AIAcctAutopilot'), path.join(APP, 'Contents', 'MacOS', 'AIAcctAutopilot'));
 fs.chmodSync(path.join(APP, 'Contents', 'MacOS', 'AIAcctAutopilot'), 0o755);
+copyDir(path.join(ROOT, 'bin'), path.join(ENGINE, 'bin'));
+fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(ENGINE, 'package.json'));
+for (const rel of ['bin/ai-acct-autopilot.js', 'bin/claude-acct']) {
+  fs.chmodSync(path.join(ENGINE, rel), 0o755);
+}
 // keep in sync with menubarInfoPlist() in bin/ai-acct-autopilot.js
 fs.writeFileSync(path.join(APP, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
