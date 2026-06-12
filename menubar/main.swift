@@ -155,7 +155,7 @@ func leftColor(_ left: Double?, threshold: Double) -> NSColor {
   return l <= threshold ? Palette.red : l <= 15 ? Palette.amber : Palette.text
 }
 
-func attr(_ parts: [(String, NSColor)], size: CGFloat = 12, mono: Bool = true, bold: Bool = false) -> NSAttributedString {
+func attr(_ parts: [(String, NSColor)], size: CGFloat = 13, mono: Bool = true, bold: Bool = false) -> NSAttributedString {
   let font = mono
     ? NSFont.monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
     : NSFont.menuFont(ofSize: size)
@@ -347,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     for acct in s.claude.accounts {
       var title: [(String, NSColor)] = []
-      title.append((acct.active ? "● " : "○ ", acct.active ? Palette.green : Palette.dim))
+      title.append((acct.active ? "● " : "○ ", acct.active ? Palette.green : Palette.grey))
       title.append((acct.name, acct.active ? Palette.orange : Palette.text))
       if let sub = acct.subscription { title.append(("  \(sub)", Palette.grey)) }
       if acct.reauth { title.append(("  re-auth needed", Palette.amber)) }
@@ -369,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     for acct in s.codex.accounts {
       var title: [(String, NSColor)] = []
-      title.append((acct.active ? "● " : "○ ", acct.active ? Palette.green : Palette.dim))
+      title.append((acct.active ? "● " : "○ ", acct.active ? Palette.green : Palette.grey))
       title.append((acct.email, acct.active ? Palette.orange : Palette.text))
       if acct.active, let plan = s.codex.plan { title.append(("  \(plan)", Palette.grey)) }
       if acct.dead { title.append(("  re-login needed", Palette.amber)) }
@@ -398,14 +398,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       let statLine = { (name: String, color: NSColor, p: ProviderStats?) -> NSAttributedString in
         attr([
           ("  \(name.padding(toLength: 7, withPad: " ", startingAt: 0))", color),
-          ("\(money(p?.todayCost)) today · \(money(p?.cost30)) 30d · \(tok(p?.tokens30)) tok", Palette.grey),
+          ("\(money(p?.todayCost)) today · \(money(p?.cost30)) 30d · \(tok(p?.tokens30)) tok", Palette.text),
         ])
       }
       menu.addItem(labelAttr(statLine("CLAUDE", Palette.tan, stats.claude)))
       menu.addItem(labelAttr(statLine("CODEX", Palette.blue, stats.codex)))
     }
     if let progress = s.statsProgress {
-      menu.addItem(label([("  \(progress)", Palette.dim)], mono: false))
+      menu.addItem(label([("  \(progress)", Palette.grey)], mono: false))
     }
 
     // ---- recent events ----
@@ -428,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "switch-failed": what = "\(prov)switch FAILED \(e.from ?? "?") → \(e.to ?? "?")"
         default: what = "\(prov)\(e.event ?? "?")"
         }
-        menu.addItem(label([("  \(when)  ", Palette.dim), (what, Palette.grey)]))
+        menu.addItem(label([("  \(when)  ", Palette.grey), (what, Palette.text)]))
       }
     }
 
@@ -448,13 +448,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       df.timeStyle = .medium
       return df.string(from: f)
     } ?? "—"
-    menu.addItem(label([("updated \(updated) · checks every \(Int(s.interval))s", Palette.dim)], mono: false))
+    menu.addItem(label([("updated \(updated) · checks every \(Int(s.interval))s", Palette.grey)], mono: false))
     menu.addItem(actionItem("Quit", #selector(quit), key: "q"))
   }
 
   func addUsageRows(_ rows: [UsageRow], trend: String?, threshold: Double) {
     if rows.isEmpty {
-      menu.addItem(label([("      ··········  usage unknown", Palette.dim)]))
+      menu.addItem(label([("      ··········  usage unknown", Palette.grey)]))
       return
     }
     for row in rows {
@@ -465,12 +465,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ("      \(row.label.padding(toLength: 7, withPad: " ", startingAt: 0))", Palette.grey),
         (barText(row.used), barColor(row.used)),
         ("  \(leftText.padding(toLength: 10, withPad: " ", startingAt: 0))", leftColor(left, threshold: threshold)),
-        (" \(reset)", Palette.dim),
+        (" \(reset)", Palette.grey),
       ])))
     }
     if let trend = trend, !trend.isEmpty {
       menu.addItem(labelAttr(attr([
-        ("      trend  ", Palette.grey), (trend, Palette.tan), ("  5h window", Palette.dim),
+        ("      trend  ", Palette.grey), (trend, Palette.tan), ("  5h window", Palette.grey),
       ])))
     }
   }
@@ -479,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   func header(_ text: String) -> NSMenuItem {
     let item = NSMenuItem()
-    item.attributedTitle = attr([("\(text)", Palette.dim)], size: 10, bold: true)
+    item.attributedTitle = attr([("\(text)", Palette.grey)], size: 11, bold: true)
     item.isEnabled = false
     return item
   }

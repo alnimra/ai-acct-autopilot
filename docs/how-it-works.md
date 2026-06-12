@@ -131,7 +131,8 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 ## Autopilot policy
 
 - **Trigger**: worst of (5h, weekly) utilization ≥ `100 - threshold`
-  (default: <5% left). Opus/sonnet sub-windows are display-only.
+  (default: <5% left). The opus sub-window is display-only; other model
+  sub-windows (e.g. sonnet) are not shown at all.
 - **Target ranking**: probe-passing accounts only, lowest worst-window
   utilization wins, soonest 5h reset breaks ties.
 - **Guards**: per-provider cooldown (default 10 min); never switch into an

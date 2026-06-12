@@ -266,9 +266,11 @@ async function fetchUsage() {
   try { return JSON.parse(r.stdout); } catch { return null; }
 }
 
+// seven_day_sonnet exists in the API response too (only for accounts with an
+// active sonnet window) but is deliberately NOT displayed — model sub-windows
+// other than opus are noise, and none of them ever drive switching.
 const WINDOWS = [
-  ['5h', 'five_hour'], ['weekly', 'seven_day'],
-  ['opus', 'seven_day_opus'], ['sonnet', 'seven_day_sonnet'],
+  ['5h', 'five_hour'], ['weekly', 'seven_day'], ['opus', 'seven_day_opus'],
 ];
 
 function rowsFor(result) {
@@ -279,7 +281,7 @@ function rowsFor(result) {
     const w = d[key];
     if (!w) continue;
     const used = pct(w.utilization);
-    const optional = key === 'seven_day_opus' || key === 'seven_day_sonnet';
+    const optional = key === 'seven_day_opus';
     if (optional && !w.resets_at && (used === null || used === 0)) continue;
     rows.push({ label, key, used, resetsAt: w.resets_at || null });
   }
@@ -958,6 +960,7 @@ function menubarInfoPlist() {
   <key>CFBundleShortVersionString</key><string>${require('../package.json').version}</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Opens the terminal dashboard in Terminal.app when you ask for it.</string>
 </dict></plist>
 `;
 }
@@ -1347,6 +1350,19 @@ function testDecision() {
 
   rep = { active: 'main', results: [mk('main', W(50, 50)), mk('alt2', W(5, 5))] };
   check('claude: no trigger below threshold (worst=50)', worstUsed(rowsFor(rep.results[0])) < 100 - THRESHOLD);
+
+  // model sub-windows: active opus is displayed, sonnet never is
+  const subWin = (u, active) => ({ utilization: u, resets_at: active ? '2099-01-03T00:00:00Z' : undefined });
+  const subRows = rowsFor({ account: 'x', usage: { ok: true, data: {
+    five_hour: subWin(10, true), seven_day: subWin(20, true),
+    seven_day_opus: subWin(30, true), seven_day_sonnet: subWin(40, true),
+  } } });
+  check('claude: sonnet window never displayed, active opus is',
+    JSON.stringify(subRows.map((r) => r.key)) === JSON.stringify(['five_hour', 'seven_day', 'seven_day_opus']));
+  const idleOpus = rowsFor({ account: 'x', usage: { ok: true, data: {
+    five_hour: subWin(10, true), seven_day: subWin(20, true), seven_day_opus: subWin(0, false),
+  } } });
+  check('claude: inactive opus window hidden', idleOpus.every((r) => r.key !== 'seven_day_opus'));
 
   // codex: primary/secondary map to the same decision shape
   const codexRows = [

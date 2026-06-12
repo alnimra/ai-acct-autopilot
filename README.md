@@ -17,8 +17,8 @@ running sessions stall. Do it at your desk and it's annoying. Have it happen at
 
 `ai-acct-autopilot` automates the whole dance:
 
-- **One dashboard** for every Claude and Codex account: 5h / weekly / opus /
-  sonnet bars, "% left", reset countdowns, usage trends — codexbar-style, in
+- **One dashboard** for every Claude and Codex account: 5h / weekly / opus
+  bars, "% left", reset countdowns, usage trends — codexbar-style, in
   your terminal.
 - **Auto-switch at the threshold** (default <5% left on the 5h *or* weekly
   window): the healthiest account takes over, picked by live probed usage.
