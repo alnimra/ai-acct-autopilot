@@ -16,15 +16,15 @@ jobs:
   release:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
       - run: npm test
       - run: npm pack # prepack builds menubar/prebuilt (universal, ad-hoc signed)
       - run: xcrun lipo -archs menubar/prebuilt/AIAcctAutopilot
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-tarball
           path: '*.tgz'
@@ -67,7 +67,7 @@ jobs:
         run: npm run build:dmg -- --notary-profile release-notary
       - name: upload DMG artifact
         if: startsWith(github.ref, 'refs/tags/') && env.DMG_SIGNING_READY == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-dmg
           path: dist/*.dmg
