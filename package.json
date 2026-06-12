@@ -10,6 +10,7 @@
     "bin",
     "docs",
     "assets",
+    "menubar",
     "install.sh"
   ],
   "engines": {

@@ -12,6 +12,12 @@ Architecture deep-dive: `docs/how-it-works.md`. Read it before non-trivial work.
   pricing mirrored from CodexBar).
 - `bin/claude-acct` — vendored bash account manager for Claude (keychain swap,
   usage, per-worktree pins). The CLI shells out to it; it is load-bearing.
+- `menubar/main.swift` — native status-bar app (AppKit, single file). A thin
+  shell: it spawns `ai-acct-autopilot.js --menubar` (one JSON snapshot per
+  tick on stdout) and shells back into the CLI for actions. ALL decisions
+  stay in node; never put switching logic in Swift. Compile is
+  `menubar build/install` (swiftc; e2e fakes it via `AI_ACCT_SWIFTC`).
+  Refresh poke is SIGUSR2 — SIGUSR1 starts node's inspector.
 
 ## Commands
 

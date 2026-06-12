@@ -74,6 +74,27 @@ That's it. When the active account drops below 5% left, the switch happens by
 itself, a macOS notification tells you about it, and the journal at the bottom
 of the dashboard keeps the receipts.
 
+## Menu bar app (CodexBar-style)
+
+Prefer the menu bar to a terminal window? The same watcher runs as a native
+macOS status item — `✳ 53% ⌁ 90%` (% left for the active Claude / Codex
+account), with a dropdown showing every account's bars, reset countdowns,
+trends, the cost panel, recent switches, and one-click manual switching.
+
+```bash
+ai-acct-autopilot menubar install   # compiles with swiftc, starts at login
+```
+
+Needs Xcode or the Command Line Tools (`xcode-select --install`) for the
+one-time compile; the app itself is dependency-free AppKit. The dropdown's
+Autopilot item pauses/resumes switching (pause = monitor only); red/amber in
+the status item follow the same rules as the terminal UI (red = needs you,
+amber = handled). `menubar stop|start|status|uninstall` manage it;
+`menubar install` again rebuilds after an update or a repo move.
+
+The menu bar app and the terminal dashboard share the same journal and
+cooldowns, so running both never double-switches.
+
 ## How switching works (and the Claude/Codex asymmetry)
 
 | | Claude Code | Codex |
@@ -113,6 +134,7 @@ add accounts with a plain `codex login`.
 | `ai-acct-autopilot codex-use <email>` | switch codex account (+ resume running sessions) |
 | `ai-acct-autopilot codex-list` / `codex-save` | list / snapshot codex accounts |
 | `ai-acct-autopilot codex-shim install\|status\|uninstall` | manage the supervisor shim |
+| `ai-acct-autopilot menubar install\|status\|stop\|uninstall` | native menu bar app |
 | `ai-acct-autopilot --test-decision` | run the decision-logic self-tests |
 | `claude-acct add\|save\|use\|list\|usage` | manage Claude accounts (by email) |
 

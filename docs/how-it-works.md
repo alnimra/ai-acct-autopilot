@@ -141,6 +141,29 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 - **Manual switches are adopted**, never fought: the active account is
   re-detected each tick.
 
+## The menu bar app
+
+`menubar install` compiles `menubar/main.swift` (single file, AppKit only)
+with `swiftc` into `~/Applications/AI Acct Autopilot.app` and registers a
+LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch on crash
+only). The app is deliberately a thin shell — every account, autopilot, and
+safety decision stays in the node watcher:
+
+- it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
+  snapshot per tick from stdout (`menubarSnapshot()` — the same data
+  `render()` draws, plus an alert list that keeps the red/amber contract);
+- manual switches shell back into the canonical paths (`codex-use`,
+  `claude-acct use`), then poke the child with **SIGUSR2** for an immediate
+  tick (SIGUSR1 is off limits — node reserves it for the inspector);
+- the Autopilot menu item restarts the child with/without `--no-switch`;
+- absolute node/script/claude-acct paths are baked into the bundle's
+  `Resources/config.json` at build time because LaunchAgents start with no
+  user PATH. Moving the repo or upgrading node means re-running
+  `menubar install`.
+
+If the app dies, the child's stdout pipe breaks and the child exits on its
+next write; if the child dies, the app respawns it after 3s.
+
 ## The cost panel
 
 `bin/usage-stats.js` streams local session logs —
@@ -164,6 +187,8 @@ afterwards ~0.2s). The numbers are estimates at API rates — not your bill.
 | `~/.codex/watch-shim.json` | shim install state (real binary path) |
 | `~/.codex/watch-restarts/<pid>` | transient restart markers (sid inside) |
 | `~/.cache/ai-acct-autopilot/` | cost-panel incremental scan cache |
+| `~/Applications/AI Acct Autopilot.app` | menu bar app bundle (`menubar install`) |
+| `~/Library/LaunchAgents/com.ai-acct-autopilot.menubar.plist` | menu bar launch agent |
 
 All credential-bearing files are written `0600`, atomically, with `.bak`
 backups. Nothing is ever sent anywhere except the providers' own endpoints.
