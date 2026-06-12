@@ -999,6 +999,13 @@ async function menubarBuild({ fromSource = false } = {}) {
     node: process.execPath, script: __filename, claudeAcct,
     version: require('../package.json').version, builtAt: new Date().toISOString(),
   }, null, 2));
+  // Seal the assembled bundle (ad-hoc). A bare-signed binary inside an
+  // unsealed .app fails taskgated's bundle validation on a fresh CDHash —
+  // "code has no resources but signature indicates they must be present" —
+  // and the app dies with SIGKILL (Code Signature Invalid). Must run LAST:
+  // the seal covers Info.plist and Resources/config.json.
+  const seal = await run('codesign', ['--force', '-s', '-', MENUBAR_APP]);
+  if (!seal.ok) return { ok: false, error: `codesign (ad-hoc bundle seal) failed: ${(seal.stderr || '').trim().slice(0, 400)}` };
   return { ok: true, source };
 }
 if (argv[0] === 'menubar') {

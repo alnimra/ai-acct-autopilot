@@ -647,6 +647,10 @@ chmod +x "$out"`);
     // failures are ignored by design
     sb.sh('launchctl', `echo "$@" >> "${sb.home}/fixtures/launchctl.log"; exit 1`);
     sb.sh('open', `echo "$@" >> "${sb.home}/fixtures/open.log"; exit 0`);
+    // real codesign rejects a shell-script "binary"; the fake also keeps the
+    // suite hermetic. The bundle seal is mandatory — an unsealed bundle dies
+    // under taskgated with SIGKILL (Code Signature Invalid).
+    sb.sh('codesign', `echo "$@" >> "${sb.home}/fixtures/codesign.log"; exit 0`);
     // pin the prebuilt seam to a missing path: these scenarios prove the
     // swiftc fallback, and must not pick up a real menubar/prebuilt/ binary
     // sitting in the repo (built by prepack on a maintainer machine)
@@ -656,6 +660,7 @@ chmod +x "$out"`);
 
     let r = runCli(sb, ['menubar', 'install'], env);
     check('menubar install builds the app bundle', r.status === 0 && fs.existsSync(path.join(app, 'Contents', 'MacOS', 'AIAcctAutopilot')), r.stderr);
+    check('install seals the bundle with ad-hoc codesign', sb.read('fixtures/codesign.log').includes('AI Acct Autopilot.app'), sb.read('fixtures/codesign.log'));
     const info = sb.read('Applications/AI Acct Autopilot.app/Contents/Info.plist');
     check('bundle Info.plist is a UI-less agent app', info.includes('<key>LSUIElement</key><true/>') && info.includes('com.ai-acct-autopilot.menubar'));
     const cfg = sb.json('Applications/AI Acct Autopilot.app/Contents/Resources/config.json');
@@ -702,6 +707,9 @@ chmod +x "$out"`);
     r = runCli(sb, ['menubar', 'build', '--from-source'], envPre);
     check('--from-source compiles even when a prebuilt exists', r.status === 0 && r.stdout.includes('(compiled from source)')
       && sb.read(binPath).includes('compiled-from-source marker') && sb.read('fixtures/swiftc.log').includes('-o'), r.stdout + r.stderr);
+    sb.sh('codesign', 'echo "seal boom" >&2; exit 1');
+    r = runCli(sb, ['menubar', 'build'], envPre);
+    check('failed bundle seal fails the build loudly', r.status === 1 && r.stderr.includes('codesign') && r.stderr.includes('seal boom'), r.stderr);
   }
 
   global.__mock.kill();
