@@ -659,8 +659,9 @@ chmod +x "$out"`);
     const info = sb.read('Applications/AI Acct Autopilot.app/Contents/Info.plist');
     check('bundle Info.plist is a UI-less agent app', info.includes('<key>LSUIElement</key><true/>') && info.includes('com.ai-acct-autopilot.menubar'));
     const cfg = sb.json('Applications/AI Acct Autopilot.app/Contents/Resources/config.json');
-    check('bundle config bakes absolute node/script/claude-acct paths', !!cfg && cfg.node === process.execPath
-      && path.isAbsolute(cfg.script) && cfg.script.endsWith('ai-acct-autopilot.js') && path.isAbsolute(cfg.claudeAcct), JSON.stringify(cfg));
+    check('bundle config bakes absolute node/script/claude-acct paths + version', !!cfg && cfg.node === process.execPath
+      && path.isAbsolute(cfg.script) && cfg.script.endsWith('ai-acct-autopilot.js') && path.isAbsolute(cfg.claudeAcct)
+      && cfg.version === require(path.join(__dirname, '..', 'package.json')).version, JSON.stringify(cfg));
     check('launch agent plist written with the bundle binary', sb.read('Library/LaunchAgents/com.ai-acct-autopilot.menubar.plist').includes('Contents/MacOS/AIAcctAutopilot'));
     check('failed bootstrap falls back to open', sb.read('fixtures/launchctl.log').includes('bootstrap') && sb.read('fixtures/open.log').includes('.app'));
 

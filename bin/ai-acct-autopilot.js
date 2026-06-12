@@ -996,7 +996,8 @@ async function menubarBuild({ fromSource = false } = {}) {
   // absolute tool paths baked at build time — LaunchAgents get no user PATH
   const claudeAcct = acctBin.includes(path.sep) ? acctBin : path.join(__dirname, 'claude-acct');
   fs.writeFileSync(path.join(p.resources, 'config.json'), JSON.stringify({
-    node: process.execPath, script: __filename, claudeAcct, builtAt: new Date().toISOString(),
+    node: process.execPath, script: __filename, claudeAcct,
+    version: require('../package.json').version, builtAt: new Date().toISOString(),
   }, null, 2));
   return { ok: true, source };
 }

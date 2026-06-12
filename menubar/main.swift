@@ -99,6 +99,8 @@ struct Config: Decodable {
   let node: String
   let script: String
   let claudeAcct: String
+  let version: String?
+  let builtAt: String?
 }
 
 // MARK: - Palette (terminal colors from the CLI dashboard)
@@ -448,7 +450,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       df.timeStyle = .medium
       return df.string(from: f)
     } ?? "—"
-    menu.addItem(label([("updated \(updated) · checks every \(Int(s.interval))s", Palette.grey)], mono: false))
+    // build stamp: settles "am I looking at the new build?" at a glance
+    var stamp = ""
+    if let cfg = config {
+      let built = parseISO(cfg.builtAt).map { d -> String in
+        let df = DateFormatter()
+        df.dateFormat = "MMM d HH:mm"
+        return df.string(from: d)
+      }
+      stamp = " · v\(cfg.version ?? "?")\(built.map { ", built \($0)" } ?? "")"
+    }
+    menu.addItem(label([("updated \(updated) · checks every \(Int(s.interval))s\(stamp)", Palette.grey)], mono: false))
     menu.addItem(actionItem("Quit", #selector(quit), key: "q"))
   }
 
