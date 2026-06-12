@@ -32,7 +32,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' *.tgz --generate-notes || gh release upload '${{ github.ref_name }}' *.tgz
+        run: gh release create '${{ github.ref_name }}' *.tgz --generate-notes || gh release upload '${{ github.ref_name }}' *.tgz --clobber
       - name: import Developer ID signing assets
         if: startsWith(github.ref, 'refs/tags/')
         env:

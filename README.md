@@ -136,6 +136,9 @@ xcrun notarytool store-credentials aaa-notary --apple-id you@x.com --team-id TEA
 npm run build:dmg -- --notary-profile aaa-notary
 ```
 
+See [docs/release.md](docs/release.md) for the preflight and verification
+checklist before tagging a public release.
+
 ## How switching works (and the Claude/Codex asymmetry)
 
 | | Claude Code | Codex |
