@@ -11,6 +11,8 @@
     "docs",
     "assets",
     "menubar",
+    "menubar/prebuilt",
+    "scripts",
     "install.sh"
   ],
   "engines": {
@@ -22,7 +24,9 @@
   "scripts": {
     "test": "node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js",
     "test:unit": "node bin/ai-acct-autopilot.js --test-decision",
-    "coverage": "npx -y c8 --include 'bin/**' --reporter=text --check-coverage --lines 90 sh -c 'node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js'"
+    "coverage": "npx -y c8 --include 'bin/**' --reporter=text --check-coverage --lines 90 sh -c 'node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js'",
+    "build:menubar": "node scripts/build-menubar.js",
+    "prepack": "node scripts/build-menubar.js"
   },
   "keywords": [
     "claude",

@@ -647,7 +647,10 @@ chmod +x "$out"`);
     // failures are ignored by design
     sb.sh('launchctl', `echo "$@" >> "${sb.home}/fixtures/launchctl.log"; exit 1`);
     sb.sh('open', `echo "$@" >> "${sb.home}/fixtures/open.log"; exit 0`);
-    const env = { AI_ACCT_SWIFTC: fakeSwiftc };
+    // pin the prebuilt seam to a missing path: these scenarios prove the
+    // swiftc fallback, and must not pick up a real menubar/prebuilt/ binary
+    // sitting in the repo (built by prepack on a maintainer machine)
+    const env = { AI_ACCT_SWIFTC: fakeSwiftc, AI_ACCT_MENUBAR_PREBUILT: path.join(sb.home, 'no-prebuilt') };
     const app = path.join(sb.home, 'Applications', 'AI Acct Autopilot.app');
     const agent = path.join(sb.home, 'Library', 'LaunchAgents', 'com.ai-acct-autopilot.menubar.plist');
 
@@ -675,10 +678,29 @@ chmod +x "$out"`);
     r = runCli(sb, ['menubar', 'start'], env);
     check('menubar start without a build errors', r.status === 1 && r.stderr.includes('not built'), r.stderr);
     const bad = sb.sh('badswiftc', 'echo boom >&2; exit 1');
-    r = runCli(sb, ['menubar', 'build'], { AI_ACCT_SWIFTC: bad });
+    r = runCli(sb, ['menubar', 'build'], { ...env, AI_ACCT_SWIFTC: bad });
     check('menubar build surfaces a swiftc failure', r.status === 1 && r.stderr.includes('swiftc failed') && r.stderr.includes('boom'), r.stderr);
     r = runCli(sb, ['menubar', 'wat'], env);
     check('unknown menubar subcommand prints usage', r.status === 1 && r.stderr.includes('usage:'));
+
+    // prebuilt binary path: npm installs ship menubar/prebuilt/AIAcctAutopilot —
+    // build must copy it verbatim and never invoke swiftc
+    const prebuilt = sb.write('prebuilt-bin', '#!/bin/sh\n# fake prebuilt universal binary\nexit 0\n');
+    const loggingSwiftc = sb.sh('logswiftc', `echo "$@" >> "${sb.home}/fixtures/swiftc.log"
+out=""
+prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+printf '#!/bin/sh\\n# compiled-from-source marker\\nexit 0\\n' > "$out"
+chmod +x "$out"`);
+    const envPre = { AI_ACCT_SWIFTC: loggingSwiftc, AI_ACCT_MENUBAR_PREBUILT: prebuilt };
+    r = runCli(sb, ['menubar', 'build'], envPre);
+    const binPath = 'Applications/AI Acct Autopilot.app/Contents/MacOS/AIAcctAutopilot';
+    check('prebuilt binary used without compiling', r.status === 0 && r.stdout.includes('(prebuilt)')
+      && sb.read(binPath).includes('fake prebuilt universal binary') && !sb.read('fixtures/swiftc.log'), r.stdout + r.stderr);
+    check('prebuilt copy is executable', (fs.statSync(path.join(sb.home, binPath)).mode & 0o111) !== 0);
+    r = runCli(sb, ['menubar', 'build', '--from-source'], envPre);
+    check('--from-source compiles even when a prebuilt exists', r.status === 0 && r.stdout.includes('(compiled from source)')
+      && sb.read(binPath).includes('compiled-from-source marker') && sb.read('fixtures/swiftc.log').includes('-o'), r.stdout + r.stderr);
   }
 
   global.__mock.kill();

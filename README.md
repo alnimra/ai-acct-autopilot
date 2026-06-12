@@ -82,15 +82,19 @@ account), with a dropdown showing every account's bars, reset countdowns,
 trends, the cost panel, recent switches, and one-click manual switching.
 
 ```bash
-ai-acct-autopilot menubar install   # compiles with swiftc, starts at login
+ai-acct-autopilot menubar install   # instant — starts now and at login
 ```
 
-Needs Xcode or the Command Line Tools (`xcode-select --install`) for the
-one-time compile; the app itself is dependency-free AppKit. The dropdown's
-Autopilot item pauses/resumes switching (pause = monitor only); red/amber in
-the status item follow the same rules as the terminal UI (red = needs you,
-amber = handled). `menubar stop|start|status|uninstall` manage it;
-`menubar install` again rebuilds after an update or a repo move.
+No Xcode needed: npm installs ship a prebuilt universal binary (built and
+ad-hoc signed by CI; npm-extracted files carry no quarantine attribute, so
+Gatekeeper never prompts). From a git clone — or with
+`menubar install --from-source` — the single-file AppKit app compiles locally
+with swiftc instead (`xcode-select --install`).
+
+The dropdown's Autopilot item pauses/resumes switching (pause = monitor
+only); red/amber in the status item follow the same rules as the terminal UI
+(red = needs you, amber = handled). `menubar stop|start|status|uninstall`
+manage it; `menubar install` again rebuilds after an update or a repo move.
 
 The menu bar app and the terminal dashboard share the same journal and
 cooldowns, so running both never double-switches.

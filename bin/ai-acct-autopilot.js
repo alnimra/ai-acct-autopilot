@@ -66,6 +66,10 @@ const MENUBAR_APP = process.env.AI_ACCT_MENUBAR_APP || path.join(HOME, 'Applicat
 const MENUBAR_AGENT = path.join(HOME, 'Library', 'LaunchAgents', `${MENUBAR_LABEL}.plist`);
 const MENUBAR_SRC = path.join(__dirname, '..', 'menubar', 'main.swift');
 const SWIFTC_OVERRIDE = process.env.AI_ACCT_SWIFTC || null; // null → xcrun -sdk macosx swiftc
+// npm tarballs ship a prebuilt universal binary (scripts/build-menubar.js,
+// prepack) so users never need Xcode; git clones fall back to swiftc.
+const MENUBAR_PREBUILT = process.env.AI_ACCT_MENUBAR_PREBUILT
+  || path.join(__dirname, '..', 'menubar', 'prebuilt', 'AIAcctAutopilot');
 
 const acctBin = fs.existsSync(path.join(HOME, '.local', 'bin', 'claude-acct'))
   ? path.join(HOME, '.local', 'bin', 'claude-acct') : 'claude-acct';
@@ -97,6 +101,8 @@ if (flag('--help') || flag('-h')) {
   codex-list             list saved codex accounts
   menubar <sub>          native macOS menu bar app (CodexBar-style):
                          install | build | start | stop | status | uninstall
+                         (npm installs use the bundled prebuilt binary — no
+                         Xcode; pass --from-source to force a swiftc build)
 
 Claude accounts are managed with claude-acct (add/save/use by email).`);
   process.exit(0);
@@ -966,22 +972,30 @@ function menubarLaunchAgent(binPath) {
 </dict></plist>
 `;
 }
-async function menubarBuild() {
-  if (!fs.existsSync(MENUBAR_SRC)) return { ok: false, error: `menubar Swift source missing: ${MENUBAR_SRC}` };
+async function menubarBuild({ fromSource = false } = {}) {
   const p = menubarPaths();
   fs.mkdirSync(path.dirname(p.bin), { recursive: true });
   fs.mkdirSync(p.resources, { recursive: true });
-  const args = ['-O', '-parse-as-library', '-o', p.bin, MENUBAR_SRC];
-  const r = SWIFTC_OVERRIDE ? await run(SWIFTC_OVERRIDE, args, 300_000)
-    : await run('xcrun', ['-sdk', 'macosx', 'swiftc', ...args], 300_000);
-  if (!r.ok) return { ok: false, error: `swiftc failed: ${(r.stderr || '').trim().slice(0, 800) || 'is Xcode / Command Line Tools installed? (xcode-select --install)'}` };
+  let source = 'prebuilt';
+  if (!fromSource && fs.existsSync(MENUBAR_PREBUILT)) {
+    // npm installs land here: no compiler, no Xcode, instant
+    fs.copyFileSync(MENUBAR_PREBUILT, p.bin);
+    fs.chmodSync(p.bin, 0o755);
+  } else {
+    if (!fs.existsSync(MENUBAR_SRC)) return { ok: false, error: `menubar Swift source missing: ${MENUBAR_SRC}` };
+    source = 'compiled from source';
+    const args = ['-O', '-parse-as-library', '-o', p.bin, MENUBAR_SRC];
+    const r = SWIFTC_OVERRIDE ? await run(SWIFTC_OVERRIDE, args, 300_000)
+      : await run('xcrun', ['-sdk', 'macosx', 'swiftc', ...args], 300_000);
+    if (!r.ok) return { ok: false, error: `swiftc failed: ${(r.stderr || '').trim().slice(0, 800) || 'is Xcode / Command Line Tools installed? (xcode-select --install)'}` };
+  }
   fs.writeFileSync(p.infoPlist, menubarInfoPlist());
   // absolute tool paths baked at build time — LaunchAgents get no user PATH
   const claudeAcct = acctBin.includes(path.sep) ? acctBin : path.join(__dirname, 'claude-acct');
   fs.writeFileSync(path.join(p.resources, 'config.json'), JSON.stringify({
     node: process.execPath, script: __filename, claudeAcct, builtAt: new Date().toISOString(),
   }, null, 2));
-  return { ok: true };
+  return { ok: true, source };
 }
 if (argv[0] === 'menubar') {
   (async () => {
@@ -989,10 +1003,11 @@ if (argv[0] === 'menubar') {
     const p = menubarPaths();
     const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
     if (sub === 'build' || sub === 'install') {
-      console.log('Compiling the menu bar app (swiftc, ~10s)…');
-      const b = await menubarBuild();
+      const fromSource = flag('--from-source');
+      if (fromSource || !fs.existsSync(MENUBAR_PREBUILT)) console.log('Compiling the menu bar app (swiftc, ~10s)…');
+      const b = await menubarBuild({ fromSource });
       if (!b.ok) { console.error(b.error); process.exit(1); }
-      console.log(`Built ${p.app}`);
+      console.log(`Built ${p.app} (${b.source})`);
       if (sub === 'install') {
         fs.mkdirSync(path.dirname(MENUBAR_AGENT), { recursive: true });
         fs.writeFileSync(MENUBAR_AGENT, menubarLaunchAgent(p.bin));

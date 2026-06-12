@@ -15,9 +15,15 @@ Architecture deep-dive: `docs/how-it-works.md`. Read it before non-trivial work.
 - `menubar/main.swift` — native status-bar app (AppKit, single file). A thin
   shell: it spawns `ai-acct-autopilot.js --menubar` (one JSON snapshot per
   tick on stdout) and shells back into the CLI for actions. ALL decisions
-  stay in node; never put switching logic in Swift. Compile is
-  `menubar build/install` (swiftc; e2e fakes it via `AI_ACCT_SWIFTC`).
+  stay in node; never put switching logic in Swift.
   Refresh poke is SIGUSR2 — SIGUSR1 starts node's inspector.
+- `menubar install` prefers `menubar/prebuilt/AIAcctAutopilot` (universal,
+  ad-hoc signed, built by `scripts/build-menubar.js` at prepack/CI — npm
+  users need no Xcode), falling back to swiftc. The prebuilt dir is
+  gitignored but force-included in package.json `files`. e2e seams:
+  `AI_ACCT_SWIFTC`, `AI_ACCT_MENUBAR_PREBUILT`, `AI_ACCT_MENUBAR_APP` —
+  scenarios must pin `AI_ACCT_MENUBAR_PREBUILT` so a maintainer's local
+  prebuilt can't leak into swiftc-path tests.
 
 ## Commands
 

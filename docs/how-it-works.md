@@ -143,11 +143,17 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 
 ## The menu bar app
 
-`menubar install` compiles `menubar/main.swift` (single file, AppKit only)
-with `swiftc` into `~/Applications/AI Acct Autopilot.app` and registers a
-LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch on crash
-only). The app is deliberately a thin shell — every account, autopilot, and
-safety decision stays in the node watcher:
+`menubar install` assembles `~/Applications/AI Acct Autopilot.app` and
+registers a LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch
+on crash only). The binary comes from `menubar/prebuilt/AIAcctAutopilot` when
+present — a universal (arm64+x86_64), ad-hoc-signed build that
+`scripts/build-menubar.js` produces at `npm pack`/publish time (prepack), so
+npm users never need Xcode. Ad-hoc is enough: npm-extracted files carry no
+quarantine attribute, so Gatekeeper stays out of it. Without the prebuilt
+(git clones) or with `--from-source`, `menubar/main.swift` (single file,
+AppKit only) is compiled locally with `swiftc`. The app is deliberately a
+thin shell — every account, autopilot, and safety decision stays in the node
+watcher:
 
 - it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
   snapshot per tick from stdout (`menubarSnapshot()` — the same data
