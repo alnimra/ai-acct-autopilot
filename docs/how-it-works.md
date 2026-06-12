@@ -144,17 +144,25 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 
 ## The menu bar app
 
-`menubar install` assembles `~/Applications/AI Acct Autopilot.app` and
-registers a LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch
-on crash only). The binary comes from `menubar/prebuilt/AIAcctAutopilot` when
+`menubar install` assembles `~/Applications/AI Acct Autopilot.app`, seals it
+(ad-hoc `codesign` of the whole bundle — a bare-signed binary inside an
+unsealed bundle gets SIGKILLed by taskgated on a fresh CDHash), and registers
+a LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch on crash
+only). The binary comes from `menubar/prebuilt/AIAcctAutopilot` when
 present — a universal (arm64+x86_64), ad-hoc-signed build that
 `scripts/build-menubar.js` produces at `npm pack`/publish time (prepack), so
 npm users never need Xcode. Ad-hoc is enough: npm-extracted files carry no
 quarantine attribute, so Gatekeeper stays out of it. Without the prebuilt
 (git clones) or with `--from-source`, `menubar/main.swift` (single file,
-AppKit only) is compiled locally with `swiftc`. The app is deliberately a
-thin shell — every account, autopilot, and safety decision stays in the node
-watcher:
+AppKit only) is compiled locally with `swiftc`.
+
+There is also a standalone distribution: `npm run build:dmg` produces a
+Developer ID-signed, notarized, stapled DMG with the drag-to-Applications
+layout. That bundle ships no config.json — at launch the app discovers the
+npm package and node itself (well-known paths, then a login-shell
+`command -v`) and offers native "Start at login" registration (SMAppService)
+instead of a LaunchAgent. The app is deliberately a thin shell — every
+account, autopilot, and safety decision stays in the node watcher:
 
 - it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
   snapshot per tick from stdout (`menubarSnapshot()` — the same data

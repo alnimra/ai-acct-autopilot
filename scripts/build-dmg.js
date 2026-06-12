@@ -83,7 +83,8 @@ fs.writeFileSync(path.join(APP, 'Contents', 'Info.plist'), `<?xml version="1.0" 
 sh('codesign', ['--force', '--deep', '--options', 'runtime', '--timestamp', '-s', identity, APP]);
 sh('codesign', ['--verify', '--strict', '--verbose=2', APP]);
 
-// 4. DMG
+// 4. DMG with the classic drag-to-install layout (app + /Applications link)
+fs.symlinkSync('/Applications', path.join(STAGE, 'Applications'));
 fs.rmSync(DMG, { force: true });
 sh('hdiutil', ['create', '-volname', 'AI Acct Autopilot', '-srcfolder', STAGE, '-ov', '-format', 'UDZO', DMG]);
 sh('codesign', ['--force', '--timestamp', '-s', identity, DMG]);

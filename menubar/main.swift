@@ -20,6 +20,7 @@
 
 import AppKit
 import Foundation
+import ServiceManagement
 
 // MARK: - Snapshot model (mirrors menubarSnapshot() in bin/ai-acct-autopilot.js)
 
@@ -217,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   var snapshot: Snapshot?
   var quitting = false
   var restarting = false
+  var standalone = false // no baked config: the DMG drag-install case
   weak var tickerItem: NSMenuItem?
 
   var autopilotEnabled: Bool {
@@ -263,8 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     if let cfg = discoverConfig() {
       config = cfg
+      standalone = true
       return
     }
+    standalone = true
     configError = "ai-acct-autopilot npm package not found — run: npm install -g ai-acct-autopilot"
   }
 
@@ -554,6 +558,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     menu.addItem(auto)
     menu.addItem(actionItem("Refresh now", #selector(refreshNow), key: "r"))
     menu.addItem(actionItem("Open Terminal dashboard", #selector(openDashboard)))
+    // drag-installed (DMG) copies have no LaunchAgent — offer the native
+    // login-item registration instead; npm installs already start at login
+    if standalone, #available(macOS 13.0, *) {
+      let login = NSMenuItem(title: "Start at login", action: #selector(toggleLoginItem), keyEquivalent: "")
+      login.target = self
+      login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+      menu.addItem(login)
+    }
     menu.addItem(.separator())
     let ticker = NSMenuItem()
     ticker.attributedTitle = tickerText()
@@ -696,6 +708,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   @objc func toggleAutopilot() {
     autopilotEnabled.toggle()
     restartChild()
+  }
+  @objc func toggleLoginItem() {
+    if #available(macOS 13.0, *) {
+      let svc = SMAppService.mainApp
+      if svc.status == .enabled { try? svc.unregister() } else { try? svc.register() }
+    }
   }
   @objc func refreshNow() {
     // SIGUSR2: SIGUSR1 would start node's inspector

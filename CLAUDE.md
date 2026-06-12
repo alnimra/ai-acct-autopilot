@@ -19,11 +19,15 @@ Architecture deep-dive: `docs/how-it-works.md`. Read it before non-trivial work.
   Refresh poke is SIGUSR2 — SIGUSR1 starts node's inspector.
 - `menubar install` prefers `menubar/prebuilt/AIAcctAutopilot` (universal,
   ad-hoc signed, built by `scripts/build-menubar.js` at prepack/CI — npm
-  users need no Xcode), falling back to swiftc. The prebuilt dir is
-  gitignored but force-included in package.json `files`. e2e seams:
-  `AI_ACCT_SWIFTC`, `AI_ACCT_MENUBAR_PREBUILT`, `AI_ACCT_MENUBAR_APP` —
-  scenarios must pin `AI_ACCT_MENUBAR_PREBUILT` so a maintainer's local
-  prebuilt can't leak into swiftc-path tests.
+  users need no Xcode), falling back to swiftc. The assembled bundle MUST be
+  codesign-sealed as the last build step (after config.json) or taskgated
+  SIGKILLs it on a fresh CDHash. The prebuilt dir is gitignored but
+  force-included in package.json `files`. e2e seams: `AI_ACCT_SWIFTC`,
+  `AI_ACCT_MENUBAR_PREBUILT`, `AI_ACCT_MENUBAR_APP`; `codesign` is faked via
+  PATH — scenarios must pin `AI_ACCT_MENUBAR_PREBUILT` so a maintainer's
+  local prebuilt can't leak into swiftc-path tests. `scripts/build-dmg.js`
+  is the maintainer-only signed/notarized DMG (drag-install, no baked
+  config — the app runtime-discovers the npm package).
 
 ## Commands
 

@@ -79,25 +79,50 @@ of the dashboard keeps the receipts.
 Prefer the menu bar to a terminal window? The same watcher runs as a native
 macOS status item — `✳ 53% ⌁ 90%` (% left for the active Claude / Codex
 account), with a dropdown showing every account's bars, reset countdowns,
-trends, the cost panel, recent switches, and one-click manual switching.
+trends, the cost panel, recent switches, a live next-check ticker, and
+one-click manual switching.
+
+**Install (you already have the npm package):**
 
 ```bash
-ai-acct-autopilot menubar install   # instant — starts now and at login
+ai-acct-autopilot menubar install   # instant — starts now and at every login
 ```
 
 No Xcode needed: npm installs ship a prebuilt universal binary (built and
 ad-hoc signed by CI; npm-extracted files carry no quarantine attribute, so
-Gatekeeper never prompts). From a git clone — or with
+Gatekeeper never prompts). The bundle is assembled into `~/Applications`,
+sealed, and registered as a launch agent. From a git clone — or with
 `menubar install --from-source` — the single-file AppKit app compiles locally
 with swiftc instead (`xcode-select --install`).
 
-The dropdown's Autopilot item pauses/resumes switching (pause = monitor
-only); red/amber in the status item follow the same rules as the terminal UI
-(red = needs you, amber = handled). `menubar stop|start|status|uninstall`
-manage it; `menubar install` again rebuilds after an update or a repo move.
+**Install (DMG, drag-and-drop like any Mac app):** download
+`AI-Acct-Autopilot-<version>.dmg` from the
+[releases page](https://github.com/alnimra/ai-acct-autopilot/releases), drag
+the app into Applications, launch it, and enable "Start at login" from its
+dropdown. The DMG build is Developer ID signed, notarized, and finds your
+npm-installed engine on its own (it tells you to
+`npm install -g ai-acct-autopilot` if it can't). Either way the npm package
+is the engine — the DMG is just the familiar front door.
+
+Day to day: Quit from the dropdown means quit (it returns at next login);
+restart any time with `ai-acct-autopilot menubar start` or Spotlight →
+"AI Acct Autopilot". The Autopilot item pauses/resumes switching instantly
+(pause = monitor only); red/amber in the status item follow the same rules
+as the terminal UI (red = needs you, amber = handled). If the codex shim is
+missing, the alert in the dropdown installs it in one click.
+`menubar stop|status|uninstall` manage the npm-installed copy;
+`menubar install` again rebuilds after an update or a repo move.
 
 The menu bar app and the terminal dashboard share the same journal and
 cooldowns, so running both never double-switches.
+
+**Maintainers — building the official DMG** (requires a "Developer ID
+Application" certificate and a stored notary profile):
+
+```bash
+xcrun notarytool store-credentials aaa-notary --apple-id you@x.com --team-id TEAMID   # once
+npm run build:dmg -- --notary-profile aaa-notary
+```
 
 ## How switching works (and the Claude/Codex asymmetry)
 
