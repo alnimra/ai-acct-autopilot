@@ -1082,7 +1082,8 @@ function menubarSnapshot(report, state) {
   const probes = state.codexProbes || new Map();
   const codex = { active: (codexId && codexId.email) || null, plan: (usage && usage.plan) || (codexId && codexId.plan) || null, accounts: [] };
   const hint = shimHint(codexId, findRealCodex());
-  if (hint) amber(hint);
+  // action: the menu bar app renders a one-click "install the shim" item
+  if (hint) alerts.push({ level: 'amber', text: hint, action: 'install-shim' });
   if (codex.active) {
     const saved = codexSavedAccounts();
     for (const email of [codex.active, ...saved.filter((e) => e !== codex.active)]) {
@@ -1282,7 +1283,7 @@ function render(report, state) {
     L.push(`  ${C.grey2}${t}${C.reset}  ${C.grey}${what}${C.reset}`);
   }
   state.footerRow = L.length + 1;
-  L.push(`  ${C.grey2}next check in ${INTERVAL}s · codex switches apply to new sessions · ctrl-c to quit${C.reset}`);
+  L.push(`  ${C.grey2}next check in ${INTERVAL}s · codex switches auto-resume shimmed sessions · ctrl-c to quit${C.reset}`);
 
   if (PLAIN) { console.log(L.map((l) => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')); return; }
   const out = L.map((l) => l + '\x1b[K').join('\n') + '\n\x1b[J';
@@ -1490,7 +1491,7 @@ async function main() {
   setInterval(() => {        // per-second countdown on the footer line
     if (PLAIN || !state.footerRow) return;
     const s = Math.max(0, Math.ceil((nextAt - now()) / 1000));
-    process.stdout.write(`\x1b[${state.footerRow};1H  ${C.grey2}next check in ${s}s · codex switches apply to new sessions · ctrl-c to quit${C.reset}\x1b[K`);
+    process.stdout.write(`\x1b[${state.footerRow};1H  ${C.grey2}next check in ${s}s · codex switches auto-resume shimmed sessions · ctrl-c to quit${C.reset}\x1b[K`);
   }, 1000);
   // serial tick loop (never overlapping); wake() lets SIGUSR1 cut the sleep short
   (async function loop() {

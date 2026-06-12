@@ -26,6 +26,7 @@
     "test:unit": "node bin/ai-acct-autopilot.js --test-decision",
     "coverage": "npx -y c8 --include 'bin/**' --reporter=text --check-coverage --lines 90 sh -c 'node bin/ai-acct-autopilot.js --test-decision && node test/e2e.js'",
     "build:menubar": "node scripts/build-menubar.js",
+    "build:dmg": "node scripts/build-dmg.js",
     "prepack": "node scripts/build-menubar.js"
   },
   "keywords": [

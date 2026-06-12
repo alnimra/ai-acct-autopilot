@@ -3,4 +3,5 @@ node_modules/
 *.log
 coverage/
 menubar/prebuilt/
+dist/
 *.tgz
