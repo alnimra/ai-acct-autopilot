@@ -129,6 +129,10 @@ attaches `AI-Acct-Autopilot-<version>.dmg` to the release:
 - `APPLE_TEAM_ID`: Apple Developer team ID
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for notarytool
 
+The workflow also accepts the same secret names used by the other desktop app
+releases in this account: `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, and `APPLE_PASSWORD`.
+
 Local maintainer build:
 
 ```bash

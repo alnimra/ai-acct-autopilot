@@ -15,7 +15,25 @@ public DMG:
 - `APPLE_TEAM_ID`: Apple Developer team ID
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for `notarytool`
 
-Create the certificate secret from a local `.p12` without printing it:
+The release workflow also accepts the existing desktop-app convention used in
+the other macOS projects in this account:
+
+- `APPLE_CERTIFICATE` instead of `MACOS_CERTIFICATE_BASE64`
+- `APPLE_CERTIFICATE_PASSWORD` instead of `MACOS_CERTIFICATE_PASSWORD`
+- `APPLE_PASSWORD` instead of `APPLE_APP_SPECIFIC_PASSWORD`
+
+Create the certificate secret from a local `.p12` without printing it. Use the
+existing desktop-app names if you want this repo to match the other projects:
+
+```bash
+base64 -i DeveloperIDApplication.p12 | gh secret set APPLE_CERTIFICATE --repo alnimra/ai-acct-autopilot
+gh secret set APPLE_CERTIFICATE_PASSWORD --repo alnimra/ai-acct-autopilot
+gh secret set APPLE_ID --repo alnimra/ai-acct-autopilot
+gh secret set APPLE_TEAM_ID --repo alnimra/ai-acct-autopilot
+gh secret set APPLE_PASSWORD --repo alnimra/ai-acct-autopilot
+```
+
+Or use the repo-specific names:
 
 ```bash
 base64 -i DeveloperIDApplication.p12 | gh secret set MACOS_CERTIFICATE_BASE64 --repo alnimra/ai-acct-autopilot
@@ -31,7 +49,15 @@ Verify the secret names, not their values:
 gh secret list --repo alnimra/ai-acct-autopilot
 ```
 
-The list must include all six names above before tagging.
+The list must include `NPM_TOKEN`, `APPLE_ID`, `APPLE_TEAM_ID`, and either the
+`MACOS_CERTIFICATE_*`/`APPLE_APP_SPECIFIC_PASSWORD` set or the
+`APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`/`APPLE_PASSWORD` set before
+tagging.
+
+Having an Apple Developer membership in Xcode is not enough by itself for this
+command-line release path. `security find-identity -v -p codesigning` must show
+a `Developer ID Application: ...` identity locally, or the equivalent `.p12`
+must be available as a GitHub secret.
 
 ## Local preflight
 
