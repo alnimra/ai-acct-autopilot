@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # macOS required: the sandboxed e2e suite fakes osascript/ps/lsof and the
+    # menubar build chain, but the code paths themselves are darwin-only
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm run coverage
+      - name: prebuilt menubar binary compiles
+        run: node scripts/build-menubar.js && xcrun lipo -archs menubar/prebuilt/AIAcctAutopilot

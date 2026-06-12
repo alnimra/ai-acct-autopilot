@@ -12,6 +12,22 @@ Architecture deep-dive: `docs/how-it-works.md`. Read it before non-trivial work.
   pricing mirrored from CodexBar).
 - `bin/claude-acct` — vendored bash account manager for Claude (keychain swap,
   usage, per-worktree pins). The CLI shells out to it; it is load-bearing.
+- `menubar/main.swift` — native status-bar app (AppKit, single file). A thin
+  shell: it spawns `ai-acct-autopilot.js --menubar` (one JSON snapshot per
+  tick on stdout) and shells back into the CLI for actions. ALL decisions
+  stay in node; never put switching logic in Swift.
+  Refresh poke is SIGUSR2 — SIGUSR1 starts node's inspector.
+- `menubar install` prefers `menubar/prebuilt/AIAcctAutopilot` (universal,
+  ad-hoc signed, built by `scripts/build-menubar.js` at prepack/CI — npm
+  users need no Xcode), falling back to swiftc. The assembled bundle MUST be
+  codesign-sealed as the last build step (after config.json) or taskgated
+  SIGKILLs it on a fresh CDHash. The prebuilt dir is gitignored but
+  force-included in package.json `files`. e2e seams: `AI_ACCT_SWIFTC`,
+  `AI_ACCT_MENUBAR_PREBUILT`, `AI_ACCT_MENUBAR_APP`; `codesign` is faked via
+  PATH — scenarios must pin `AI_ACCT_MENUBAR_PREBUILT` so a maintainer's
+  local prebuilt can't leak into swiftc-path tests. `scripts/build-dmg.js`
+  is the maintainer-only signed/notarized DMG (drag-install, no baked
+  config — the app runtime-discovers the npm package).
 
 ## Commands
 

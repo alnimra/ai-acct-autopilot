@@ -19,10 +19,11 @@
 //        switch to the healthiest saved account.
 //
 //   ai-acct-autopilot [--interval 60] [--threshold 5] [--cooldown 10]
-//                [--once] [--no-switch] [--plain]
+//                [--once] [--no-switch] [--plain] [--menubar]
 //   ai-acct-autopilot codex-save           snapshot current codex account
 //   ai-acct-autopilot codex-use <email>    switch codex account (new sessions)
 //   ai-acct-autopilot codex-list           list saved codex accounts
+//   ai-acct-autopilot menubar install      native macOS menu bar app (CodexBar-style)
 //
 // Accounts are named by their email (unique, profile-verified).
 // Zero dependencies. NEVER logs token material.
@@ -59,6 +60,16 @@ const SHIM_MARK = '# ai-acct-autopilot codex shim';
 const SHIM_MARK_LEGACY = '# ai-cli-watch codex shim'; // pre-rename installs upgrade in place
 const SHIM_STATE = path.join(HOME, '.codex', 'watch-shim.json');
 const RESTART_DIR = path.join(HOME, '.codex', 'watch-restarts');
+// menubar app constants (AI_ACCT_* overrides = e2e sandbox seams, same as above)
+const MENUBAR_LABEL = 'com.ai-acct-autopilot.menubar';
+const MENUBAR_APP = process.env.AI_ACCT_MENUBAR_APP || path.join(HOME, 'Applications', 'AI Acct Autopilot.app');
+const MENUBAR_AGENT = path.join(HOME, 'Library', 'LaunchAgents', `${MENUBAR_LABEL}.plist`);
+const MENUBAR_SRC = path.join(__dirname, '..', 'menubar', 'main.swift');
+const SWIFTC_OVERRIDE = process.env.AI_ACCT_SWIFTC || null; // null → xcrun -sdk macosx swiftc
+// npm tarballs ship a prebuilt universal binary (scripts/build-menubar.js,
+// prepack) so users never need Xcode; git clones fall back to swiftc.
+const MENUBAR_PREBUILT = process.env.AI_ACCT_MENUBAR_PREBUILT
+  || path.join(__dirname, '..', 'menubar', 'prebuilt', 'AIAcctAutopilot');
 
 const acctBin = fs.existsSync(path.join(HOME, '.local', 'bin', 'claude-acct'))
   ? path.join(HOME, '.local', 'bin', 'claude-acct') : 'claude-acct';
@@ -81,12 +92,17 @@ if (flag('--help') || flag('-h')) {
   --once         one tick, then exit
   --no-switch    monitor only — never switch accounts
   --plain        no screen clearing / colors (logging mode)
+  --menubar      emit one JSON status line per tick (the menu bar app's feed)
 
   codex-add <email?>     log a NEW codex account into the bench (isolated login —
                          the current session stays alive)
   codex-save             snapshot the current codex account (~/.codex/accounts)
   codex-use <email>      switch codex account — applies to NEW sessions only
   codex-list             list saved codex accounts
+  menubar <sub>          native macOS menu bar app (CodexBar-style):
+                         install | build | start | stop | status | uninstall
+                         (npm installs use the bundled prebuilt binary — no
+                         Xcode; pass --from-source to force a swiftc build)
 
 Claude accounts are managed with claude-acct (add/save/use by email).`);
   process.exit(0);
@@ -96,9 +112,12 @@ const THRESHOLD = Math.min(50, Math.max(1, opt('--threshold', 5)));
 const COOLDOWN_MS = Math.max(1, opt('--cooldown', 10)) * 60_000;
 const ONCE = flag('--once');
 const NO_SWITCH = flag('--no-switch');
+// menubar mode: the Swift status-bar app spawns this process and reads one
+// JSON snapshot line per tick from stdout — no ANSI, ever, on that stream.
+const MENUBAR = flag('--menubar');
 // AI_ACCT_FORCE_ANSI: e2e seam — exercise the interactive render path against
 // a pipe (no pty on macOS CI). Never set in production.
-const PLAIN = flag('--plain') || (!process.stdout.isTTY && !process.env.AI_ACCT_FORCE_ANSI);
+const PLAIN = flag('--plain') || MENUBAR || (!process.stdout.isTTY && !process.env.AI_ACCT_FORCE_ANSI);
 
 // ---------- ansi ----------
 const ansi = !PLAIN;
@@ -247,9 +266,11 @@ async function fetchUsage() {
   try { return JSON.parse(r.stdout); } catch { return null; }
 }
 
+// seven_day_sonnet exists in the API response too (only for accounts with an
+// active sonnet window) but is deliberately NOT displayed — model sub-windows
+// other than opus are noise, and none of them ever drive switching.
 const WINDOWS = [
-  ['5h', 'five_hour'], ['weekly', 'seven_day'],
-  ['opus', 'seven_day_opus'], ['sonnet', 'seven_day_sonnet'],
+  ['5h', 'five_hour'], ['weekly', 'seven_day'], ['opus', 'seven_day_opus'],
 ];
 
 function rowsFor(result) {
@@ -260,7 +281,7 @@ function rowsFor(result) {
     const w = d[key];
     if (!w) continue;
     const used = pct(w.utilization);
-    const optional = key === 'seven_day_opus' || key === 'seven_day_sonnet';
+    const optional = key === 'seven_day_opus';
     if (optional && !w.resets_at && (used === null || used === 0)) continue;
     rows.push({ label, key, used, resetsAt: w.resets_at || null });
   }
@@ -914,6 +935,197 @@ if (argv[0] === 'codex-shim') {
   process.exit(1);
 }
 
+// ════════════════════════ menubar app ════════════════════════
+// CodexBar-style native macOS status-bar app. The Swift source (menubar/
+// main.swift) is compiled on the user's machine with swiftc into a minimal
+// .app bundle; the app then runs THIS script with --menubar as its data feed
+// and shells back into it (codex-use) / claude-acct (use) for manual switches.
+const xmlEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function menubarPaths() {
+  return {
+    app: MENUBAR_APP,
+    bin: path.join(MENUBAR_APP, 'Contents', 'MacOS', 'AIAcctAutopilot'),
+    resources: path.join(MENUBAR_APP, 'Contents', 'Resources'),
+    infoPlist: path.join(MENUBAR_APP, 'Contents', 'Info.plist'),
+  };
+}
+function menubarInfoPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>${MENUBAR_LABEL}</string>
+  <key>CFBundleName</key><string>AI Acct Autopilot</string>
+  <key>CFBundleExecutable</key><string>AIAcctAutopilot</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${require('../package.json').version}</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Opens the terminal dashboard in Terminal.app when you ask for it.</string>
+</dict></plist>
+`;
+}
+function menubarLaunchAgent(binPath) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${MENUBAR_LABEL}</string>
+  <key>ProgramArguments</key><array><string>${xmlEscape(binPath)}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+</dict></plist>
+`;
+}
+async function menubarBuild({ fromSource = false } = {}) {
+  const p = menubarPaths();
+  fs.mkdirSync(path.dirname(p.bin), { recursive: true });
+  fs.mkdirSync(p.resources, { recursive: true });
+  let source = 'prebuilt';
+  if (!fromSource && fs.existsSync(MENUBAR_PREBUILT)) {
+    // npm installs land here: no compiler, no Xcode, instant
+    fs.copyFileSync(MENUBAR_PREBUILT, p.bin);
+    fs.chmodSync(p.bin, 0o755);
+  } else {
+    if (!fs.existsSync(MENUBAR_SRC)) return { ok: false, error: `menubar Swift source missing: ${MENUBAR_SRC}` };
+    source = 'compiled from source';
+    const args = ['-O', '-parse-as-library', '-o', p.bin, MENUBAR_SRC];
+    const r = SWIFTC_OVERRIDE ? await run(SWIFTC_OVERRIDE, args, 300_000)
+      : await run('xcrun', ['-sdk', 'macosx', 'swiftc', ...args], 300_000);
+    if (!r.ok) return { ok: false, error: `swiftc failed: ${(r.stderr || '').trim().slice(0, 800) || 'is Xcode / Command Line Tools installed? (xcode-select --install)'}` };
+  }
+  fs.writeFileSync(p.infoPlist, menubarInfoPlist());
+  // absolute tool paths baked at build time — LaunchAgents get no user PATH
+  const claudeAcct = acctBin.includes(path.sep) ? acctBin : path.join(__dirname, 'claude-acct');
+  fs.writeFileSync(path.join(p.resources, 'config.json'), JSON.stringify({
+    node: process.execPath, script: __filename, claudeAcct,
+    version: require('../package.json').version, builtAt: new Date().toISOString(),
+  }, null, 2));
+  // Seal the assembled bundle (ad-hoc). A bare-signed binary inside an
+  // unsealed .app fails taskgated's bundle validation on a fresh CDHash —
+  // "code has no resources but signature indicates they must be present" —
+  // and the app dies with SIGKILL (Code Signature Invalid). Must run LAST:
+  // the seal covers Info.plist and Resources/config.json.
+  const seal = await run('codesign', ['--force', '-s', '-', MENUBAR_APP]);
+  if (!seal.ok) return { ok: false, error: `codesign (ad-hoc bundle seal) failed: ${(seal.stderr || '').trim().slice(0, 400)}` };
+  return { ok: true, source };
+}
+if (argv[0] === 'menubar') {
+  (async () => {
+    const sub = argv[1] || 'status';
+    const p = menubarPaths();
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+    if (sub === 'build' || sub === 'install') {
+      const fromSource = flag('--from-source');
+      if (fromSource || !fs.existsSync(MENUBAR_PREBUILT)) console.log('Compiling the menu bar app (swiftc, ~10s)…');
+      const b = await menubarBuild({ fromSource });
+      if (!b.ok) { console.error(b.error); process.exit(1); }
+      console.log(`Built ${p.app} (${b.source})`);
+      if (sub === 'install') {
+        fs.mkdirSync(path.dirname(MENUBAR_AGENT), { recursive: true });
+        fs.writeFileSync(MENUBAR_AGENT, menubarLaunchAgent(p.bin));
+        await run('launchctl', ['bootout', `gui/${uid}/${MENUBAR_LABEL}`]); // old instance; failure = wasn't running
+        const l = await run('launchctl', ['bootstrap', `gui/${uid}`, MENUBAR_AGENT]);
+        if (!l.ok) await run('open', [p.app]); // bootstrap denied (rare) → at least start it now
+        console.log('Menu bar app running — it starts at login (launch agent installed).');
+        console.log('Remove with: ai-acct-autopilot menubar uninstall');
+      }
+      process.exit(0);
+    }
+    if (sub === 'start') {
+      if (!fs.existsSync(p.bin)) { console.error('not built — run: ai-acct-autopilot menubar install'); process.exit(1); }
+      const r = await run('open', [p.app]);
+      process.exit(r.ok ? 0 : 1);
+    }
+    if (sub === 'stop') {
+      await run('launchctl', ['bootout', `gui/${uid}/${MENUBAR_LABEL}`]);
+      console.log('Menu bar app stopped (if it was running).');
+      process.exit(0);
+    }
+    if (sub === 'status') {
+      const cfg = readJson(path.join(p.resources, 'config.json'));
+      const ps = await run(PS_BIN, ['-axo', 'command=']);
+      const running = ps.stdout.split('\n').some((l) => l.includes(p.bin));
+      console.log(`app:    ${fs.existsSync(p.bin) ? `${p.app}${cfg ? ` (built ${cfg.builtAt})` : ''}` : 'not built — run: ai-acct-autopilot menubar install'}`);
+      console.log(`agent:  ${fs.existsSync(MENUBAR_AGENT) ? MENUBAR_AGENT : 'not installed'}`);
+      console.log(`state:  ${running ? 'running' : 'not running'}`);
+      process.exit(0);
+    }
+    if (sub === 'uninstall') {
+      await run('launchctl', ['bootout', `gui/${uid}/${MENUBAR_LABEL}`]);
+      try { fs.rmSync(MENUBAR_AGENT, { force: true }); } catch {}
+      try { fs.rmSync(MENUBAR_APP, { recursive: true, force: true }); } catch {}
+      console.log('Menu bar app and launch agent removed.');
+      process.exit(0);
+    }
+    console.error('usage: ai-acct-autopilot menubar [install|build|start|stop|status|uninstall]');
+    process.exit(1);
+  })();
+}
+
+// One status snapshot per tick for the menu bar app: the same data render()
+// draws, as JSON. Alert levels follow the terminal palette contract — red
+// means "needs the user", amber means "handled / informational".
+function menubarSnapshot(report, state) {
+  const alerts = [];
+  const amber = (text) => alerts.push({ level: 'amber', text });
+  const red = (text) => alerts.push({ level: 'red', text });
+
+  const claude = { ok: !!report, active: (report && report.active) || null, accounts: [] };
+  if (!report) red('claude-acct usage failed — retrying next tick');
+  for (const res of (report && report.results) || []) {
+    const rows = rowsFor(res);
+    const worst = rows ? worstUsed(rows) : null;
+    if (state.reauth.has(res.account)) amber(`claude ${res.account}: re-auth needed`);
+    claude.accounts.push({
+      name: res.account, email: res.email || null, subscription: res.subscriptionType || null,
+      active: res.account === claude.active, recovery: isRecovery(res.account),
+      reauth: state.reauth.has(res.account), rows: rows || [],
+      percentLeft: worst === null ? null : Math.round(100 - worst),
+      trend: trendFor(res.email || res.account) || null,
+    });
+  }
+
+  const codexId = codexIdentity(readJson(CODEX_AUTH));
+  const usage = codexUsage();
+  const probes = state.codexProbes || new Map();
+  const codex = { active: (codexId && codexId.email) || null, plan: (usage && usage.plan) || (codexId && codexId.plan) || null, accounts: [] };
+  const hint = shimHint(codexId, findRealCodex());
+  // action: the menu bar app renders a one-click "install the shim" item
+  if (hint) alerts.push({ level: 'amber', text: hint, action: 'install-shim' });
+  if (codex.active) {
+    const saved = codexSavedAccounts();
+    for (const email of [codex.active, ...saved.filter((e) => e !== codex.active)]) {
+      const isActive = email === codex.active;
+      const p = probes.get(email);
+      const dead = !!(p && !p.ok && (p.status === 401 || p.status === 403));
+      const rows = (p && p.ok && p.rows) || (isActive && usage && usage.rows) || null;
+      const worst = rows ? worstUsed(rows) : null;
+      if (dead) amber(`codex ${email}: re-login needed — run: ai-acct-autopilot codex-add ${email}`);
+      codex.accounts.push({
+        email, active: isActive, saved: saved.includes(email), dead, rows: rows || [],
+        percentLeft: worst === null ? null : Math.round(100 - worst),
+        trend: (isActive && usage && usage.trend) || null,
+      });
+    }
+  }
+
+  if (state.holdReason) amber(state.holdReason);
+  if (state.codexHold) amber(state.codexHold);
+  const events = journalTail(5);
+  for (const e of events) {
+    if (e.event === 'switch-failed' && now() - new Date(e.ts).getTime() < 15 * 60_000) {
+      red(`${e.provider || 'claude'} switch FAILED ${e.from} → ${e.to}`);
+    }
+  }
+  return {
+    v: 1, ts: new Date().toISOString(),
+    mode: NO_SWITCH ? 'monitor' : 'auto', threshold: THRESHOLD, interval: INTERVAL,
+    attention: alerts.some((a) => a.level === 'red') ? 'red' : alerts.length ? 'amber' : 'ok',
+    alerts, claude, codex,
+    stats: state.stats || null, statsProgress: state.statsProgress || null,
+    events: events.slice().reverse(),
+  };
+}
+
 // ════════════════════════ render ════════════════════════
 function bar(used, width) {
   const u = used === null ? 0 : used;
@@ -929,6 +1141,10 @@ function fmtLeft(used) {
 }
 
 function render(report, state) {
+  if (MENUBAR) {
+    try { process.stdout.write(JSON.stringify(menubarSnapshot(report, state)) + '\n'); } catch {}
+    return;
+  }
   const cols = Math.max(72, process.stdout.columns || 100);
   const barW = Math.max(20, Math.min(44, cols - 52));
   const L = [];
@@ -1074,7 +1290,7 @@ function render(report, state) {
     L.push(`  ${C.grey2}${t}${C.reset}  ${C.grey}${what}${C.reset}`);
   }
   state.footerRow = L.length + 1;
-  L.push(`  ${C.grey2}next check in ${INTERVAL}s · codex switches apply to new sessions · ctrl-c to quit${C.reset}`);
+  L.push(`  ${C.grey2}next check in ${INTERVAL}s · codex switches auto-resume shimmed sessions · ctrl-c to quit${C.reset}`);
 
   if (PLAIN) { console.log(L.map((l) => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')); return; }
   const out = L.map((l) => l + '\x1b[K').join('\n') + '\n\x1b[J';
@@ -1144,6 +1360,19 @@ function testDecision() {
   rep = { active: 'main', results: [mk('main', W(50, 50)), mk('alt2', W(5, 5))] };
   check('claude: no trigger below threshold (worst=50)', worstUsed(rowsFor(rep.results[0])) < 100 - THRESHOLD);
 
+  // model sub-windows: active opus is displayed, sonnet never is
+  const subWin = (u, active) => ({ utilization: u, resets_at: active ? '2099-01-03T00:00:00Z' : undefined });
+  const subRows = rowsFor({ account: 'x', usage: { ok: true, data: {
+    five_hour: subWin(10, true), seven_day: subWin(20, true),
+    seven_day_opus: subWin(30, true), seven_day_sonnet: subWin(40, true),
+  } } });
+  check('claude: sonnet window never displayed, active opus is',
+    JSON.stringify(subRows.map((r) => r.key)) === JSON.stringify(['five_hour', 'seven_day', 'seven_day_opus']));
+  const idleOpus = rowsFor({ account: 'x', usage: { ok: true, data: {
+    five_hour: subWin(10, true), seven_day: subWin(20, true), seven_day_opus: subWin(0, false),
+  } } });
+  check('claude: inactive opus window hidden', idleOpus.every((r) => r.key !== 'seven_day_opus'));
+
   // codex: primary/secondary map to the same decision shape
   const codexRows = [
     { label: '5h', key: 'five_hour', used: 97, resetsAt: '2099-01-01T00:00:00Z' },
@@ -1206,6 +1435,19 @@ function testDecision() {
     check('detect: first candidate wins', findRealCodex([shim, stock]).binPath === shim);
   } finally { fs.rmSync(tdir, { recursive: true, force: true }); }
 
+  // menubar snapshot: claude mapping + alert contract (the codex side and the
+  // full stream run live in the sandboxed e2e suite). Only claude/alert fields
+  // are asserted — the codex fields read this machine's real (read-only) state.
+  const mbState = { reauth: new Set(['alt2']), codexProbes: new Map(), holdReason: 'claude: cooldown — would switch to alt2', codexHold: null, stats: null, statsProgress: null };
+  const mbRep = { active: 'main', results: [mk('main', W(96, 50)), mk('alt2', W(12, 31))] };
+  const snap = menubarSnapshot(mbRep, mbState);
+  check('menubar: active account mapped with percentLeft', snap.claude.accounts[0].active === true && snap.claude.accounts[0].percentLeft === 4);
+  check('menubar: reauth flag + amber alert', snap.claude.accounts[1].reauth === true && snap.alerts.some((a) => a.level === 'amber' && a.text.includes('re-auth')));
+  check('menubar: hold reason becomes an amber alert', snap.alerts.some((a) => a.level === 'amber' && a.text.includes('cooldown')));
+  check('menubar: failed usage fetch → red attention', menubarSnapshot(null, { reauth: new Set() }).attention === 'red');
+  check('menubar: launch agent plist xml-escapes the binary path', menubarLaunchAgent('/x/<&>app').includes('/x/&lt;&amp;&gt;app'));
+  check('menubar: app bundle plist is a UI-less agent', menubarInfoPlist().includes('<key>LSUIElement</key><true/>'));
+
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
@@ -1219,6 +1461,12 @@ async function main() {
     process.on('SIGINT', cleanup); process.on('SIGTERM', cleanup);
   }
   state.stats = usageStats.cachedStats();  // instant render from last scan
+  let nextAt = now() + INTERVAL * 1000;
+  let wake = null;
+  // SIGUSR2 = "tick now" (the menu bar app's Refresh / post-switch poke).
+  // Registered before the first tick so an early poke can't kill the process.
+  // (SIGUSR1 is off limits: node reserves it for the inspector.)
+  process.on('SIGUSR2', () => { nextAt = now(); if (wake) wake(); });
 
   const runStats = async () => {
     try {
@@ -1227,7 +1475,9 @@ async function main() {
       });
       if (s) state.stats = s;
       state.statsProgress = null;
-      if (!ONCE) render(state.lastReport, state);
+      // rerender only after a tick produced data — a fast stats scan must not
+      // flash "usage failed" (red) before the first usage poll completes
+      if (!ONCE && state.lastReport) render(state.lastReport, state);
     } catch { state.statsProgress = null; }
   };
 
@@ -1235,23 +1485,26 @@ async function main() {
   // e2e seam: bounded interactive run that still flushes V8 coverage on exit
   // (a signal kill would discard it). No effect unless the env var is set.
   if (process.env.AI_ACCT_EXIT_AFTER_MS) {
-    setTimeout(() => { process.stdout.write('\x1b[?25h\x1b[0m\n'); process.exit(0); }, Number(process.env.AI_ACCT_EXIT_AFTER_MS));
+    setTimeout(() => { if (!PLAIN) process.stdout.write('\x1b[?25h\x1b[0m\n'); process.exit(0); }, Number(process.env.AI_ACCT_EXIT_AFTER_MS));
   }
+  // the menu bar app dies → its read pipe closes → exit instead of crashing
+  if (MENUBAR) process.stdout.on('error', () => process.exit(0));
 
   runStats();                              // background; rerenders when done
   setInterval(runStats, 5 * 60_000);       // refresh stats every 5 min
   await tick(state);
 
-  let nextAt = now() + INTERVAL * 1000;
+  nextAt = now() + INTERVAL * 1000;
   setInterval(() => {        // per-second countdown on the footer line
     if (PLAIN || !state.footerRow) return;
     const s = Math.max(0, Math.ceil((nextAt - now()) / 1000));
-    process.stdout.write(`\x1b[${state.footerRow};1H  ${C.grey2}next check in ${s}s · codex switches apply to new sessions · ctrl-c to quit${C.reset}\x1b[K`);
+    process.stdout.write(`\x1b[${state.footerRow};1H  ${C.grey2}next check in ${s}s · codex switches auto-resume shimmed sessions · ctrl-c to quit${C.reset}\x1b[K`);
   }, 1000);
-  // serial tick loop (never overlapping)
+  // serial tick loop (never overlapping); wake() lets SIGUSR1 cut the sleep short
   (async function loop() {
     for (;;) {
-      await new Promise((r) => setTimeout(r, Math.max(0, nextAt - now())));
+      await new Promise((r) => { wake = r; setTimeout(r, Math.max(0, nextAt - now())); });
+      wake = null;
       nextAt = now() + INTERVAL * 1000;
       try { await tick(state); } catch {}
     }
@@ -1260,4 +1513,4 @@ async function main() {
 
 // Subcommands exit on their own (codex-use asynchronously); only the
 // dashboard path runs the main loop.
-if (!['codex-save', 'codex-use', 'codex-list', 'codex-shim', 'codex-ensure', 'codex-supervise', 'codex-add'].includes(argv[0])) main();
+if (!['codex-save', 'codex-use', 'codex-list', 'codex-shim', 'codex-ensure', 'codex-supervise', 'codex-add', 'menubar'].includes(argv[0])) main();

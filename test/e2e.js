@@ -590,6 +590,128 @@ exit 0`);
     check('interactive loop renders with ANSI and exits clean', code === 0 && out.includes('AI CLI Accounts') && out.includes('\x1b['), `exit=${code} out=${out.slice(0, 120)}`);
   }
 
+  // ── S19: --menubar JSON feed — NDJSON per tick, SIGUSR2 = refresh now
+  {
+    const sb = sandbox('s19');
+    standardWorld(sb);
+    const env = {
+      HOME: sb.home, PATH: `${sb.bin}:${NODE_DIR}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      NODE_TLS_REJECT_UNAUTHORIZED: '0',
+      AI_ACCT_OAUTH_URL: `https://127.0.0.1:${PORT}/oauth`, AI_ACCT_WHAM_URL: `https://127.0.0.1:${PORT}/wham`,
+      AI_ACCT_PS_BIN: sb.fakePs, AI_ACCT_LSOF_BIN: sb.fakeLsof, TERM: 'dumb',
+      AI_ACCT_EXIT_AFTER_MS: '8000',
+      // pin the shim probe to a missing path — the host machine's real codex
+      // install state must not decide whether the snapshot carries an alert
+      AI_ACCT_CODEX_BIN: path.join(sb.home, 'no-codex-here'),
+      ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
+    };
+    // interval 300s: within the 8s window the ONLY extra ticks can come from
+    // the startup stats rerender and our SIGUSR2 poke.
+    const child = spawn(process.execPath, [BIN, '--menubar', '--interval', '300', '--no-switch'], { env });
+    let out = '';
+    child.stdout.on('data', (c) => { out += c; });
+    const lineCount = () => out.split('\n').filter(Boolean).length;
+    const waitFor = (cond, ms) => new Promise((res) => {
+      const t0 = Date.now();
+      const iv = setInterval(() => { if (cond() || Date.now() - t0 > ms) { clearInterval(iv); res(); } }, 50);
+    });
+    await waitFor(() => lineCount() >= 1, 15_000);
+    await new Promise((r) => setTimeout(r, 1500));   // let the stats rerender land
+    const before = lineCount();
+    child.kill('SIGUSR2');
+    const code = await new Promise((r) => { child.on('exit', (c) => r(c)); setTimeout(() => { child.kill('SIGKILL'); r(-1); }, 30_000); });
+    const snaps = out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+    check('menubar feed: clean exit, every line is JSON, no ANSI', code === 0 && snaps.length > 0 && snaps.every(Boolean) && !out.includes('\x1b['), out.slice(0, 200));
+    const s = snaps[0];
+    check('menubar feed: claude accounts mapped with % left', !!s && s.claude.active === 'a@test'
+      && s.claude.accounts.some((a) => a.name === 'b@test' && a.percentLeft === 90 && !a.active), JSON.stringify(s && s.claude));
+    check('menubar feed: codex accounts probed and mapped', !!s && s.codex.active === 'cx-a@test'
+      && s.codex.accounts.some((a) => a.email === 'cx-b@test' && a.percentLeft === 90 && a.saved), JSON.stringify(s && s.codex));
+    check('menubar feed: usage rows carry reset timestamps', !!s && s.claude.accounts[0].rows.every((r) => r.resetsAt), JSON.stringify(s && s.claude.accounts[0]));
+    check('menubar feed: mode/threshold/interval surfaced', !!s && s.mode === 'monitor' && s.threshold === 5 && s.interval === 300);
+    check('menubar feed: SIGUSR2 forces an immediate tick', snaps.length > before, `before=${before} after=${snaps.length}`);
+    check('menubar feed: healthy world → attention ok', !!s && s.attention === 'ok' && s.alerts.length === 0, JSON.stringify(s && s.alerts));
+  }
+
+  // ── S20: menubar install/status/uninstall — fake swiftc/launchctl/open;
+  //         the bundle lands in the sandbox HOME, never in real ~/Applications
+  {
+    const sb = sandbox('s20');
+    const fakeSwiftc = sb.sh('fakeswiftc', `out=""
+prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+[ -n "$out" ] || exit 1
+printf '#!/bin/sh\\nexit 0\\n' > "$out"
+chmod +x "$out"`);
+    // launchctl always failing covers the bootstrap→open fallback; bootout
+    // failures are ignored by design
+    sb.sh('launchctl', `echo "$@" >> "${sb.home}/fixtures/launchctl.log"; exit 1`);
+    sb.sh('open', `echo "$@" >> "${sb.home}/fixtures/open.log"; exit 0`);
+    // real codesign rejects a shell-script "binary"; the fake also keeps the
+    // suite hermetic. The bundle seal is mandatory — an unsealed bundle dies
+    // under taskgated with SIGKILL (Code Signature Invalid).
+    sb.sh('codesign', `echo "$@" >> "${sb.home}/fixtures/codesign.log"; exit 0`);
+    // pin the prebuilt seam to a missing path: these scenarios prove the
+    // swiftc fallback, and must not pick up a real menubar/prebuilt/ binary
+    // sitting in the repo (built by prepack on a maintainer machine)
+    const env = { AI_ACCT_SWIFTC: fakeSwiftc, AI_ACCT_MENUBAR_PREBUILT: path.join(sb.home, 'no-prebuilt') };
+    const app = path.join(sb.home, 'Applications', 'AI Acct Autopilot.app');
+    const agent = path.join(sb.home, 'Library', 'LaunchAgents', 'com.ai-acct-autopilot.menubar.plist');
+
+    let r = runCli(sb, ['menubar', 'install'], env);
+    check('menubar install builds the app bundle', r.status === 0 && fs.existsSync(path.join(app, 'Contents', 'MacOS', 'AIAcctAutopilot')), r.stderr);
+    check('install seals the bundle with ad-hoc codesign', sb.read('fixtures/codesign.log').includes('AI Acct Autopilot.app'), sb.read('fixtures/codesign.log'));
+    const info = sb.read('Applications/AI Acct Autopilot.app/Contents/Info.plist');
+    check('bundle Info.plist is a UI-less agent app', info.includes('<key>LSUIElement</key><true/>') && info.includes('com.ai-acct-autopilot.menubar'));
+    const cfg = sb.json('Applications/AI Acct Autopilot.app/Contents/Resources/config.json');
+    check('bundle config bakes absolute node/script/claude-acct paths + version', !!cfg && cfg.node === process.execPath
+      && path.isAbsolute(cfg.script) && cfg.script.endsWith('ai-acct-autopilot.js') && path.isAbsolute(cfg.claudeAcct)
+      && cfg.version === require(path.join(__dirname, '..', 'package.json')).version, JSON.stringify(cfg));
+    check('launch agent plist written with the bundle binary', sb.read('Library/LaunchAgents/com.ai-acct-autopilot.menubar.plist').includes('Contents/MacOS/AIAcctAutopilot'));
+    check('failed bootstrap falls back to open', sb.read('fixtures/launchctl.log').includes('bootstrap') && sb.read('fixtures/open.log').includes('.app'));
+
+    r = runCli(sb, ['menubar', 'status'], env);
+    check('menubar status reports app + agent, not running (empty ps)', r.status === 0
+      && r.stdout.includes('AI Acct Autopilot.app') && r.stdout.includes('LaunchAgents') && r.stdout.includes('not running'), r.stdout);
+    r = runCli(sb, ['menubar', 'start'], env);
+    check('menubar start opens the built app', r.status === 0 && sb.read('fixtures/open.log').trim().split('\n').length >= 2);
+    r = runCli(sb, ['menubar', 'stop'], env);
+    check('menubar stop boots the agent out', r.status === 0 && sb.read('fixtures/launchctl.log').includes('bootout'), r.stdout);
+    r = runCli(sb, ['menubar', 'uninstall'], env);
+    check('menubar uninstall removes bundle + agent', r.status === 0 && !fs.existsSync(app) && !fs.existsSync(agent), r.stdout);
+    r = runCli(sb, ['menubar', 'status'], env);
+    check('status after uninstall says not built', r.stdout.includes('not built'), r.stdout);
+    r = runCli(sb, ['menubar', 'start'], env);
+    check('menubar start without a build errors', r.status === 1 && r.stderr.includes('not built'), r.stderr);
+    const bad = sb.sh('badswiftc', 'echo boom >&2; exit 1');
+    r = runCli(sb, ['menubar', 'build'], { ...env, AI_ACCT_SWIFTC: bad });
+    check('menubar build surfaces a swiftc failure', r.status === 1 && r.stderr.includes('swiftc failed') && r.stderr.includes('boom'), r.stderr);
+    r = runCli(sb, ['menubar', 'wat'], env);
+    check('unknown menubar subcommand prints usage', r.status === 1 && r.stderr.includes('usage:'));
+
+    // prebuilt binary path: npm installs ship menubar/prebuilt/AIAcctAutopilot —
+    // build must copy it verbatim and never invoke swiftc
+    const prebuilt = sb.write('prebuilt-bin', '#!/bin/sh\n# fake prebuilt universal binary\nexit 0\n');
+    const loggingSwiftc = sb.sh('logswiftc', `echo "$@" >> "${sb.home}/fixtures/swiftc.log"
+out=""
+prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+printf '#!/bin/sh\\n# compiled-from-source marker\\nexit 0\\n' > "$out"
+chmod +x "$out"`);
+    const envPre = { AI_ACCT_SWIFTC: loggingSwiftc, AI_ACCT_MENUBAR_PREBUILT: prebuilt };
+    r = runCli(sb, ['menubar', 'build'], envPre);
+    const binPath = 'Applications/AI Acct Autopilot.app/Contents/MacOS/AIAcctAutopilot';
+    check('prebuilt binary used without compiling', r.status === 0 && r.stdout.includes('(prebuilt)')
+      && sb.read(binPath).includes('fake prebuilt universal binary') && !sb.read('fixtures/swiftc.log'), r.stdout + r.stderr);
+    check('prebuilt copy is executable', (fs.statSync(path.join(sb.home, binPath)).mode & 0o111) !== 0);
+    r = runCli(sb, ['menubar', 'build', '--from-source'], envPre);
+    check('--from-source compiles even when a prebuilt exists', r.status === 0 && r.stdout.includes('(compiled from source)')
+      && sb.read(binPath).includes('compiled-from-source marker') && sb.read('fixtures/swiftc.log').includes('-o'), r.stdout + r.stderr);
+    sb.sh('codesign', 'echo "seal boom" >&2; exit 1');
+    r = runCli(sb, ['menubar', 'build'], envPre);
+    check('failed bundle seal fails the build loudly', r.status === 1 && r.stderr.includes('codesign') && r.stderr.includes('seal boom'), r.stderr);
+  }
+
   global.__mock.kill();
   console.log(`${pass} passed, ${fail} failed`);
   if (fail) { console.log(`sandbox kept for debugging: ${ROOT}`); process.exit(1); }

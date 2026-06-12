@@ -131,7 +131,8 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
 ## Autopilot policy
 
 - **Trigger**: worst of (5h, weekly) utilization ≥ `100 - threshold`
-  (default: <5% left). Opus/sonnet sub-windows are display-only.
+  (default: <5% left). The opus sub-window is display-only; other model
+  sub-windows (e.g. sonnet) are not shown at all.
 - **Target ranking**: probe-passing accounts only, lowest worst-window
   utilization wins, soonest 5h reset breaks ties.
 - **Guards**: per-provider cooldown (default 10 min); never switch into an
@@ -140,6 +141,43 @@ codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
   earliest reset.
 - **Manual switches are adopted**, never fought: the active account is
   re-detected each tick.
+
+## The menu bar app
+
+`menubar install` assembles `~/Applications/AI Acct Autopilot.app`, seals it
+(ad-hoc `codesign` of the whole bundle — a bare-signed binary inside an
+unsealed bundle gets SIGKILLed by taskgated on a fresh CDHash), and registers
+a LaunchAgent (`com.ai-acct-autopilot.menubar`, RunAtLoad, relaunch on crash
+only). The binary comes from `menubar/prebuilt/AIAcctAutopilot` when
+present — a universal (arm64+x86_64), ad-hoc-signed build that
+`scripts/build-menubar.js` produces at `npm pack`/publish time (prepack), so
+npm users never need Xcode. Ad-hoc is enough: npm-extracted files carry no
+quarantine attribute, so Gatekeeper stays out of it. Without the prebuilt
+(git clones) or with `--from-source`, `menubar/main.swift` (single file,
+AppKit only) is compiled locally with `swiftc`.
+
+There is also a standalone distribution: `npm run build:dmg` produces a
+Developer ID-signed, notarized, stapled DMG with the drag-to-Applications
+layout. That bundle ships no config.json — at launch the app discovers the
+npm package and node itself (well-known paths, then a login-shell
+`command -v`) and offers native "Start at login" registration (SMAppService)
+instead of a LaunchAgent. The app is deliberately a thin shell — every
+account, autopilot, and safety decision stays in the node watcher:
+
+- it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
+  snapshot per tick from stdout (`menubarSnapshot()` — the same data
+  `render()` draws, plus an alert list that keeps the red/amber contract);
+- manual switches shell back into the canonical paths (`codex-use`,
+  `claude-acct use`), then poke the child with **SIGUSR2** for an immediate
+  tick (SIGUSR1 is off limits — node reserves it for the inspector);
+- the Autopilot menu item restarts the child with/without `--no-switch`;
+- absolute node/script/claude-acct paths are baked into the bundle's
+  `Resources/config.json` at build time because LaunchAgents start with no
+  user PATH. Moving the repo or upgrading node means re-running
+  `menubar install`.
+
+If the app dies, the child's stdout pipe breaks and the child exits on its
+next write; if the child dies, the app respawns it after 3s.
 
 ## The cost panel
 
@@ -164,6 +202,8 @@ afterwards ~0.2s). The numbers are estimates at API rates — not your bill.
 | `~/.codex/watch-shim.json` | shim install state (real binary path) |
 | `~/.codex/watch-restarts/<pid>` | transient restart markers (sid inside) |
 | `~/.cache/ai-acct-autopilot/` | cost-panel incremental scan cache |
+| `~/Applications/AI Acct Autopilot.app` | menu bar app bundle (`menubar install`) |
+| `~/Library/LaunchAgents/com.ai-acct-autopilot.menubar.plist` | menu bar launch agent |
 
 All credential-bearing files are written `0600`, atomically, with `.bak`
 backups. Nothing is ever sent anywhere except the providers' own endpoints.
