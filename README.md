@@ -95,14 +95,11 @@ sealed, and registered as a launch agent. From a git clone — or with
 `menubar install --from-source` — the single-file AppKit app compiles locally
 with swiftc instead (`xcode-select --install`).
 
-**Install (DMG, drag-and-drop like any Mac app):** download
-`AI-Acct-Autopilot-<version>.dmg` from the
-[releases page](https://github.com/alnimra/ai-acct-autopilot/releases), drag
-the app into Applications, launch it, and enable "Start at login" from its
-dropdown. The DMG build is Developer ID signed, notarized, and finds your
-npm-installed engine on its own (it tells you to
-`npm install -g ai-acct-autopilot` if it can't). Either way the npm package
-is the engine — the DMG is just the familiar front door.
+**No public DMG yet:** the current release artifact is the npm tarball, so the
+supported user install path is `npm install -g ai-acct-autopilot` followed by
+`ai-acct-autopilot menubar install`. A drag-and-drop DMG build path exists for
+maintainers, but it is only publishable after a Developer ID certificate and
+Apple notarization profile are configured.
 
 Day to day: Quit from the dropdown means quit (it returns at next login);
 restart any time with `ai-acct-autopilot menubar start` or Spotlight →
@@ -117,8 +114,9 @@ The terminal dashboard is still available with `ai-acct-autopilot` for SSH,
 logs, and debugging. It shares the same journal and cooldowns as the menu bar
 app, so running both never double-switches.
 
-**Maintainers — building the official DMG** (requires a "Developer ID
-Application" certificate and a stored notary profile):
+**Maintainers — building an official DMG** (requires a "Developer ID
+Application" certificate and a stored notary profile; attach the resulting DMG
+to a GitHub release only after notarization succeeds):
 
 ```bash
 xcrun notarytool store-credentials aaa-notary --apple-id you@x.com --team-id TEAMID   # once
