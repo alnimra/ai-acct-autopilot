@@ -1406,21 +1406,26 @@ final class ActionButton: NSButton {
   required init?(coder: NSCoder) { fatalError() }
 }
 
+final class FlippedDocumentView: NSView {
+  override var isFlipped: Bool { true }
+}
+
 final class ManageAccountsWindowController: NSWindowController {
   weak var app: AppDelegate?
   let stack = NSStackView()
   let status = NSTextField(labelWithString: "")
+  let contentMinWidth: CGFloat = 600
   var latest: Snapshot?
 
   init(app: AppDelegate) {
     self.app = app
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
+      contentRect: NSRect(x: 0, y: 0, width: 660, height: 680),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false)
     window.title = "Manage Accounts"
-    window.minSize = NSSize(width: 500, height: 500)
+    window.minSize = NSSize(width: 640, height: 500)
     super.init(window: window)
     setup()
   }
@@ -1432,6 +1437,7 @@ final class ManageAccountsWindowController: NSWindowController {
     window?.titlebarAppearsTransparent = true
     window?.isMovableByWindowBackground = true
     window?.backgroundColor = .clear
+    installTitlebarGlass()
 
     let glass = NSVisualEffectView()
     glass.translatesAutoresizingMaskIntoConstraints = false
@@ -1444,14 +1450,17 @@ final class ManageAccountsWindowController: NSWindowController {
     scroll.hasVerticalScroller = true
     scroll.drawsBackground = false
     scroll.contentView.drawsBackground = false
+    scroll.automaticallyAdjustsContentInsets = false
+    scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 12
+    stack.detachesHiddenViews = true
     stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
     stack.translatesAutoresizingMaskIntoConstraints = false
 
-    let host = NSView()
+    let host = FlippedDocumentView()
     host.translatesAutoresizingMaskIntoConstraints = false
     host.wantsLayer = true
     host.layer?.backgroundColor = NSColor.clear.cgColor
@@ -1479,14 +1488,49 @@ final class ManageAccountsWindowController: NSWindowController {
     status.font = NSFont.systemFont(ofSize: 12)
     status.textColor = Palette.grey
     status.lineBreakMode = .byTruncatingTail
+    setStatus("")
     rebuild(nil)
+  }
+
+  func installTitlebarGlass() {
+    guard let titlebar = window?.standardWindowButton(.closeButton)?.superview else { return }
+    let glass = NSVisualEffectView()
+    glass.translatesAutoresizingMaskIntoConstraints = false
+    glass.material = .titlebar
+    glass.blendingMode = .withinWindow
+    glass.state = .active
+    glass.wantsLayer = true
+    glass.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.22).cgColor
+
+    let separator = NSBox()
+    separator.translatesAutoresizingMaskIntoConstraints = false
+    separator.boxType = .separator
+    separator.alphaValue = 0.55
+
+    titlebar.addSubview(glass, positioned: .below, relativeTo: nil)
+    titlebar.addSubview(separator)
+
+    NSLayoutConstraint.activate([
+      glass.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
+      glass.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
+      glass.topAnchor.constraint(equalTo: titlebar.topAnchor),
+      glass.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
+      separator.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
+      separator.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
+      separator.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
+    ])
+  }
+
+  func setStatus(_ message: String) {
+    status.stringValue = message
+    status.isHidden = message.isEmpty
   }
 
   func update(snapshot: Snapshot) {
     let wasRefreshing = status.stringValue == "Refreshing..."
     latest = snapshot
     rebuild(snapshot)
-    if wasRefreshing { status.stringValue = "Updated just now." }
+    if wasRefreshing { setStatus("Updated just now.") }
   }
 
   func rebuild(_ snapshot: Snapshot?) {
@@ -1645,7 +1689,7 @@ final class ManageAccountsWindowController: NSWindowController {
     row.orientation = .horizontal
     row.alignment = .centerY
     row.spacing = 8
-    row.widthAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
+    row.widthAnchor.constraint(greaterThanOrEqualToConstant: contentMinWidth).isActive = true
     let titleField = field(title, size: 15, weight: .semibold, color: Palette.text)
     row.addArrangedSubview(titleField)
     let spacer = NSView()
@@ -1660,7 +1704,7 @@ final class ManageAccountsWindowController: NSWindowController {
     row.orientation = .horizontal
     row.alignment = .centerY
     row.spacing = 8
-    row.widthAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
+    row.widthAnchor.constraint(greaterThanOrEqualToConstant: contentMinWidth).isActive = true
     row.addArrangedSubview(field(active ? "●" : "●", size: 10, weight: .regular, color: active ? Palette.green : NSColor.quaternaryLabelColor))
     let text = vstack(spacing: 1)
     text.addArrangedSubview(field(title, size: 13, weight: .semibold, color: active ? Palette.orange : Palette.text))
@@ -1693,21 +1737,29 @@ final class ManageAccountsWindowController: NSWindowController {
   func separator() -> NSBox {
     let box = NSBox()
     box.boxType = .separator
-    box.widthAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
+    box.widthAnchor.constraint(greaterThanOrEqualToConstant: contentMinWidth).isActive = true
     return box
   }
 
   func caption(_ text: String) -> NSTextField {
     let t = field(text, size: 12, weight: .regular, color: Palette.grey)
     t.lineBreakMode = .byWordWrapping
+    t.cell?.wraps = true
+    t.cell?.isScrollable = false
     t.maximumNumberOfLines = 2
+    t.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    t.setContentHuggingPriority(.defaultLow, for: .horizontal)
     return t
   }
 
   func labelLine(_ text: String, color: NSColor) -> NSTextField {
     let t = field(text, size: 12, weight: .medium, color: color)
     t.lineBreakMode = .byWordWrapping
+    t.cell?.wraps = true
+    t.cell?.isScrollable = false
     t.maximumNumberOfLines = 3
+    t.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    t.setContentHuggingPriority(.defaultLow, for: .horizontal)
     return t
   }
 
@@ -1720,12 +1772,12 @@ final class ManageAccountsWindowController: NSWindowController {
   }
 
   @objc func runAction(_ sender: ActionButton) {
-    status.stringValue = "Running \(sender.title)..."
+    setStatus("Running \(sender.title)...")
     app?.runAppAction(sender.actionName, value: sender.actionValue) { [weak self] result in
       if let result = result {
         self?.app?.optimisticallyApplyAction(sender.actionName, value: sender.actionValue, result: result)
       }
-      self?.status.stringValue = result?.message ?? "Action failed."
+      self?.setStatus(result?.message ?? "Action failed.")
       if result?.ok == false { self?.showMessage(result?.message ?? "Action failed.") }
     }
   }
@@ -1766,12 +1818,12 @@ final class ManageAccountsWindowController: NSWindowController {
   }
 
   func runNamedAction(_ action: String, value: String?) {
-    status.stringValue = "Running \(action)..."
+    setStatus("Running \(action)...")
     app?.runAppAction(action, value: value) { [weak self] result in
       if let result = result {
         self?.app?.optimisticallyApplyAction(action, value: value, result: result)
       }
-      self?.status.stringValue = result?.message ?? "Action failed."
+      self?.setStatus(result?.message ?? "Action failed.")
       if result?.ok == false { self?.showMessage(result?.message ?? "Action failed.") }
     }
   }
@@ -1796,9 +1848,9 @@ final class ManageAccountsWindowController: NSWindowController {
   }
 
   @objc func refresh() {
-    status.stringValue = "Refreshing..."
+    setStatus("Refreshing...")
     app?.refreshNowFromWatcherAndState { [weak self] ok in
-      self?.status.stringValue = ok ? "Updated just now." : "Refresh failed."
+      self?.setStatus(ok ? "Updated just now." : "Refresh failed.")
     }
   }
 
