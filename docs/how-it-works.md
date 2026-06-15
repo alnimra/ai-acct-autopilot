@@ -103,9 +103,11 @@ exec node /path/to/ai-acct-autopilot.js codex-supervise -- "$@"
 `codex-supervise` runs a pre-launch account check (`codex-ensure`: if the
 active account has <threshold% left on fresh data and a better bench account
 exists, swap `auth.json` *before* codex starts), then spawns the real codex
-and waits.
+and waits. If that pre-launch check switches the account, it also restarts
+other already-running supervised codex sessions; changing `auth.json` alone is
+not enough because existing codex processes keep their old token in memory.
 
-On an account switch, the watcher:
+On any codex account switch, the watcher or launch-ensure path:
 
 1. finds running codex **launcher** processes (`node …/codex.js`, never the
    Codex.app app-server),
@@ -128,7 +130,9 @@ supervisor then relaunches with the original args (the task re-runs).
 
 Fail-safe in both directions: any supervisor/ensure failure still launches
 codex, and an npm upgrade of `@openai/codex` simply restores the stock binary
-(re-run `codex-shim install` after upgrades).
+(re-run `codex-shim install` after upgrades). Re-running `codex-shim install`
+also updates an existing v3 shim whose wrapper still points at an older
+autopilot engine.
 
 ## Autopilot policy
 
@@ -170,10 +174,22 @@ npm install if needed. It offers native "Start at login" registration
 every account, autopilot, and safety decision stays in the node watcher:
 
 - it spawns `node bin/ai-acct-autopilot.js --menubar` and reads one JSON
-  snapshot per tick from stdout (`menubarSnapshot()` — the same data
-  `render()` draws, plus an alert list that keeps the red/amber contract);
-- manual switches shell back into the canonical paths (`codex-use`,
-  `claude-acct use`), then poke the child with **SIGUSR2** for an immediate
+  snapshot per tick from stdout (`buildAppState()` — the same data
+  `render()` draws, plus readiness, shim state, and an alert list that keeps
+  the red/amber contract);
+- the node engine checks the latest GitHub release with a six-hour local cache
+  and includes update metadata in the same snapshot; the native shell prompts
+  once per newer release and opens the signed DMG asset or release page;
+- Manage Accounts and dropdown mutations shell back into
+  `ai-acct-autopilot app-action <action> --json`, including Claude account
+  changes. Node then calls the canonical provider paths (`claude-acct`,
+  isolated `codex-add`, `codex-use`, `codex-shim`, and safe saved-account
+  removal) and returns structured JSON for the native UI. The native Remove
+  buttons call `claude-remove <account>` or `codex-remove <email>` only after a
+  confirmation prompt. Removal is limited to non-active saved snapshots and
+  provider sidecars; it never deletes live auth, sessions, journals, usage
+  history, or Claude recovery snapshots;
+- after a mutation, the app pokes the child with **SIGUSR2** for an immediate
   tick (SIGUSR1 is off limits — node reserves it for the inspector);
 - the Autopilot menu item restarts the child with/without `--no-switch`;
 - absolute node/script/claude-acct paths are baked into the bundle's

@@ -82,8 +82,8 @@ on download and it must not be published.
 After `package.json` has the release version and CI is green on `main`:
 
 ```bash
-git tag v1.1.2
-git push origin v1.1.2
+git tag v1.1.3
+git push origin v1.1.3
 gh run list --repo alnimra/ai-acct-autopilot --workflow release --limit 1
 gh run watch --repo alnimra/ai-acct-autopilot <run-id> --exit-status
 ```
@@ -93,20 +93,20 @@ gh run watch --repo alnimra/ai-acct-autopilot <run-id> --exit-status
 Check the release assets:
 
 ```bash
-gh release view v1.1.2 --repo alnimra/ai-acct-autopilot --json assets,url
+gh release view v1.1.3 --repo alnimra/ai-acct-autopilot --json assets,url
 ```
 
 The release must include:
 
-- `ai-acct-autopilot-1.1.2.tgz`
-- `AI-Acct-Autopilot-1.1.2.dmg`
+- `ai-acct-autopilot-1.1.3.tgz`
+- `AI-Acct-Autopilot-1.1.3.dmg`
 
 Then download and verify the DMG:
 
 ```bash
-gh release download v1.1.2 --repo alnimra/ai-acct-autopilot --pattern '*.dmg' --dir /tmp/ai-acct-autopilot-release
-spctl -a -vv -t open /tmp/ai-acct-autopilot-release/AI-Acct-Autopilot-1.1.2.dmg
-hdiutil attach -nobrowse -readonly /tmp/ai-acct-autopilot-release/AI-Acct-Autopilot-1.1.2.dmg
+gh release download v1.1.3 --repo alnimra/ai-acct-autopilot --pattern '*.dmg' --dir /tmp/ai-acct-autopilot-release
+spctl -a -vv -t open /tmp/ai-acct-autopilot-release/AI-Acct-Autopilot-1.1.3.dmg
+hdiutil attach -nobrowse -readonly /tmp/ai-acct-autopilot-release/AI-Acct-Autopilot-1.1.3.dmg
 ```
 
 Inside the mounted app, confirm the bundled engine exists:

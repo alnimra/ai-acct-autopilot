@@ -43,6 +43,21 @@ with your own credentials.
 
 ## Install
 
+**Recommended Mac download:**
+
+1. Download
+   [AI-Acct-Autopilot-1.1.3.dmg](https://github.com/alnimra/ai-acct-autopilot/releases/download/v1.1.3/AI-Acct-Autopilot-1.1.3.dmg).
+2. Open the DMG.
+3. Drag **AI Acct Autopilot.app** to **Applications**.
+4. Open **AI Acct Autopilot** from Applications or Spotlight.
+
+The DMG is signed, notarized, and stapled. It bundles the autopilot engine and
+discovers your system Node 18+ runtime at launch. The menu bar app checks the
+latest GitHub release in the background and prompts you when a newer signed DMG
+is available.
+
+**CLI fallback:**
+
 ```bash
 npm install -g ai-acct-autopilot
 # or from a clone:
@@ -55,34 +70,40 @@ manager it builds on).
 
 ## Quick start
 
-```bash
-# 1. Save your current Claude account, then add more (browser login each):
-claude-acct save you@example.com
-claude-acct add other@example.com        # overwrite-login; NEVER /logout
+After the app opens, click the menu bar item and choose
+**Manage Accounts...**. First launch opens that window automatically when setup
+is incomplete.
 
-# 2. Add codex accounts (isolated login — your current session stays alive):
-ai-acct-autopilot codex-save             # snapshot the current codex account
-ai-acct-autopilot codex-add other@example.com
+The first-run path is:
 
-# 3. Install the codex supervisor shim (enables auto-resume of running sessions):
-ai-acct-autopilot codex-shim install
+1. Check the status at the top. **Ready** means all saved accounts and Codex
+   resume support look good; **Needs attention** shows the exact missing step.
+2. In **Claude**, use **Save Current** for the Claude login already on this
+   Mac, or **Add Account** to capture another Claude login.
+3. In **Codex**, use **Save Current** for the current Codex login, or
+   **Add Account** for an isolated login that will not revoke the active one.
+4. If Codex resume support is missing, click **Install Resume**. This installs
+   the supervisor shim that restarts and resumes running Codex sessions after a
+   switch.
+5. Use **Switch** for a manual switch, **Remove** for a saved non-active
+   account, **Refresh** after browser logins, and **Diagnostics** when
+   something looks wrong.
 
-# 4. Install the native menu bar app. It starts now and at every login.
-ai-acct-autopilot menubar install
-```
-
-That's it. When the active account drops below 5% left, the switch happens by
-itself, a macOS notification tells you about it, and the dropdown journal keeps
-the receipts.
+Autopilot is on by default. When the active account drops below 5% left, the
+switch happens by itself, a macOS notification tells you about it, and the menu
+bar journal keeps the receipts.
 
 ## Mac menu bar app (main UI)
 
 The normal way to run `ai-acct-autopilot` is the native macOS status item:
-`✳ 53% ⌁ 90%` (% left for the active Claude / Codex account). Its dropdown
+Claude and OpenAI icons with "% left" for the active accounts. Its dropdown
 shows every account's bars, reset countdowns, trends, the cost panel, recent
-switches, a live next-check ticker, and one-click manual switching.
+switches, a live next-check ticker, and one-click manual switching. Its
+**Manage Accounts...** window is the onboarding and settings surface for saved
+accounts, safe saved-account removal, Codex resume support, diagnostics, and
+the few terminal escape hatches that still matter for support.
 
-**Install (you already have the npm package):**
+**Install from npm instead of the DMG:**
 
 ```bash
 ai-acct-autopilot menubar install   # instant — starts now and at every login
@@ -95,11 +116,8 @@ sealed, and registered as a launch agent. From a git clone — or with
 `menubar install --from-source` — the single-file AppKit app compiles locally
 with swiftc instead (`xcode-select --install`).
 
-**DMG releases:** GitHub releases attach a drag-and-drop DMG once the
-maintainer signing secrets are configured. The DMG is the easy Mac download for
-the menu bar app: it bundles the autopilot CLI engine and discovers a system
-Node 18+ runtime at launch. The npm path remains the fallback and the best
-option for people who want the CLI commands in their shell:
+The npm path remains the fallback and the best option for people who want the
+CLI commands in their shell:
 
 ```bash
 npm install -g ai-acct-autopilot
@@ -111,7 +129,9 @@ restart any time with `ai-acct-autopilot menubar start` or Spotlight →
 "AI Acct Autopilot". The Autopilot item pauses/resumes switching instantly
 (pause = monitor only); red/amber in the status item follow the same rules
 as the terminal UI (red = needs you, amber = handled). If the codex shim is
-missing, the alert in the dropdown installs it in one click.
+missing, the alert in the dropdown or Manage Accounts installs it in one click.
+When an app update is available, the dropdown and Manage Accounts show a
+download action and the app prompts once per release version.
 `menubar stop|status|uninstall` manage the npm-installed copy;
 `menubar install` again rebuilds after an update or a repo move.
 
@@ -179,6 +199,9 @@ add accounts with a plain `codex login`.
 | `ai-acct-autopilot` | run the terminal dashboard + autopilot (60s ticks) |
 | `ai-acct-autopilot --no-switch` | monitor only — shows the switch it WOULD make |
 | `ai-acct-autopilot --once --plain` | single tick, plain text (logging/cron) |
+| `ai-acct-autopilot app-state --json` | JSON state used by the native Manage Accounts surface |
+| `ai-acct-autopilot app-action <action> --json` | JSON mutation contract used by menu bar buttons, including `claude-remove <account>` and `codex-remove <email>` |
+| `ai-acct-autopilot app-diagnose --json` | support diagnostics for the native app |
 | `ai-acct-autopilot codex-add <email>` | add a codex account via isolated login |
 | `ai-acct-autopilot codex-use <email>` | switch codex account (+ resume running sessions) |
 | `ai-acct-autopilot codex-list` / `codex-save` | list / snapshot codex accounts |
@@ -197,6 +220,9 @@ Flags: `--interval N` (seconds, default 60) · `--threshold N` (switch when
   this tick; accounts with failed probes or revoked sessions are excluded.
 - **Atomic credential writes** with `.bak` of the previous blob; a failed
   refresh never deletes anything.
+- **Safe saved-account removal** — Manage Accounts can remove non-active saved
+  Claude/Codex snapshots after confirmation, but never logs out, revokes,
+  deletes live auth, or removes recovery snapshots.
 - **Cooldown + all-hot hold** — no thrashing; if every account is hot, it
   holds, notifies once, and shows the earliest reset.
 - **Append-only journal** (`~/.claude/accounts/switch-journal.jsonl`) — every

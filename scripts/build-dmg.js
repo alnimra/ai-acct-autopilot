@@ -31,6 +31,7 @@ const APP = path.join(STAGE, 'AI Acct Autopilot.app');
 const RESOURCES = path.join(APP, 'Contents', 'Resources');
 const ENGINE = path.join(RESOURCES, 'engine');
 const DMG = path.join(DIST, `AI-Acct-Autopilot-${VERSION}.dmg`);
+const ENTITLEMENTS = path.join(ROOT, 'menubar', 'AIAcctAutopilot.entitlements');
 
 const arg = (name) => {
   const i = process.argv.indexOf(name);
@@ -92,7 +93,7 @@ fs.writeFileSync(path.join(APP, 'Contents', 'Info.plist'), `<?xml version="1.0" 
 `);
 
 // 3. sign with hardened runtime (notarization requirement)
-sh('codesign', ['--force', '--deep', '--options', 'runtime', '--timestamp', '-s', identity, APP]);
+sh('codesign', ['--force', '--deep', '--options', 'runtime', '--timestamp', '--entitlements', ENTITLEMENTS, '-s', identity, APP]);
 sh('codesign', ['--verify', '--strict', '--verbose=2', APP]);
 
 // 4. DMG with the classic drag-to-install layout (app + /Applications link)

@@ -43,6 +43,8 @@ const CLAUDE_JSON = path.join(HOME, '.claude.json');
 const CODEX_AUTH = path.join(HOME, '.codex', 'auth.json');
 const CODEX_DIR = path.join(HOME, '.codex', 'accounts');
 const CODEX_SESSIONS = path.join(HOME, '.codex', 'sessions');
+const CACHE_DIR = path.join(HOME, '.cache', 'ai-acct-autopilot');
+const UPDATE_CACHE = path.join(CACHE_DIR, 'update-check.json');
 const usageStats = require('./usage-stats'); // local-log cost/token stats (account-independent)
 // Claude Code CLI's public OAuth client — same client the CLI itself uses.
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
@@ -50,8 +52,12 @@ const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 // suite (test/e2e.js); production behavior is the default on every one.
 const OAUTH_TOKEN_URL = process.env.AI_ACCT_OAUTH_URL || 'https://console.anthropic.com/v1/oauth/token';
 const WHAM_USAGE_URL = process.env.AI_ACCT_WHAM_URL || 'https://chatgpt.com/backend-api/wham/usage';
+const UPDATE_URL = process.env.AI_ACCT_UPDATE_URL || 'https://api.github.com/repos/alnimra/ai-acct-autopilot/releases/latest';
+const UPDATE_LATEST_URL = process.env.AI_ACCT_UPDATE_LATEST_URL || 'https://github.com/alnimra/ai-acct-autopilot/releases/latest';
+const UPDATE_CHECK_MAX_AGE_MS = Number(process.env.AI_ACCT_UPDATE_CACHE_MS || 6 * 60 * 60_000);
 const PS_BIN = process.env.AI_ACCT_PS_BIN || '/bin/ps';
 const LSOF_BIN = process.env.AI_ACCT_LSOF_BIN || '/usr/sbin/lsof';
+const PGREP_BIN = process.env.AI_ACCT_PGREP_BIN || '/usr/bin/pgrep';
 const CODEX_BIN_OVERRIDE = process.env.AI_ACCT_CODEX_BIN || null;
 const CODEX_USAGE_MAX_AGE_MS = 30 * 60_000;  // stale usage never drives a switch
 // shim constants live up here: subcommand blocks run at module top-level and
@@ -62,7 +68,14 @@ const SHIM_STATE = path.join(HOME, '.codex', 'watch-shim.json');
 const RESTART_DIR = path.join(HOME, '.codex', 'watch-restarts');
 // menubar app constants (AI_ACCT_* overrides = e2e sandbox seams, same as above)
 const MENUBAR_LABEL = 'com.ai-acct-autopilot.menubar';
-const MENUBAR_APP = process.env.AI_ACCT_MENUBAR_APP || path.join(HOME, 'Applications', 'AI Acct Autopilot.app');
+function bundledMenubarApp() {
+  const marker = `${path.sep}Contents${path.sep}Resources${path.sep}engine${path.sep}bin${path.sep}`;
+  const i = __filename.indexOf(marker);
+  if (i < 0) return null;
+  const app = __filename.slice(0, i);
+  return app.endsWith('.app') ? app : null;
+}
+const MENUBAR_APP = process.env.AI_ACCT_MENUBAR_APP || bundledMenubarApp() || path.join(HOME, 'Applications', 'AI Acct Autopilot.app');
 const MENUBAR_AGENT = path.join(HOME, 'Library', 'LaunchAgents', `${MENUBAR_LABEL}.plist`);
 const MENUBAR_SRC = path.join(__dirname, '..', 'menubar', 'main.swift');
 const SWIFTC_OVERRIDE = process.env.AI_ACCT_SWIFTC || null; // null → xcrun -sdk macosx swiftc
@@ -73,6 +86,9 @@ const MENUBAR_PREBUILT = process.env.AI_ACCT_MENUBAR_PREBUILT
 
 const acctBin = fs.existsSync(path.join(HOME, '.local', 'bin', 'claude-acct'))
   ? path.join(HOME, '.local', 'bin', 'claude-acct') : 'claude-acct';
+const packageVersion = () => {
+  try { return require(path.join(__dirname, '..', 'package.json')).version; } catch { return null; }
+};
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
@@ -99,6 +115,9 @@ if (flag('--help') || flag('-h')) {
   codex-save             snapshot the current codex account (~/.codex/accounts)
   codex-use <email>      switch codex account — applies to NEW sessions only
   codex-list             list saved codex accounts
+  app-state --json       JSON state contract for native settings surfaces
+  app-action <action>    JSON mutation contract used by the menu bar app
+  app-diagnose --json    JSON diagnostics for app/support troubleshooting
   menubar <sub>          native macOS menu bar app (CodexBar-style):
                          install | build | start | stop | status | uninstall
                          (npm installs use the bundled prebuilt binary — no
@@ -140,11 +159,20 @@ const stripLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, '').length;
 // ---------- small utils ----------
 const run = (cmd, args, timeout = 90_000) => new Promise((resolve) => {
   execFile(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024 },
-    (err, stdout, stderr) => resolve({ ok: !err, stdout: stdout || '', stderr: stderr || '' }));
+    (err, stdout, stderr) => resolve({
+      ok: !err,
+      code: err && typeof err.code === 'number' ? err.code : 0,
+      timedOut: !!(err && err.killed),
+      error: err ? String(err.message || err) : null,
+      stdout: stdout || '',
+      stderr: stderr || '',
+    }));
 });
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 const pct = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : null);
 const now = () => Date.now();
+const stderrTail = (s) => String(s || '').trim().split('\n').slice(-5).join('\n');
+const jsonOut = (obj, code = 0) => { process.stdout.write(JSON.stringify(obj, null, 2) + '\n'); process.exit(code); };
 
 function atomicWrite(file, content) {
   if (fs.existsSync(file)) { try { fs.copyFileSync(file, `${file}.bak`); } catch {} }
@@ -185,6 +213,114 @@ function lastSwitchTs(provider) {
   return evts.length ? new Date(evts[evts.length - 1].ts).getTime() : 0;
 }
 
+function normalizeVersion(v) {
+  return String(v || '').trim().replace(/^v/i, '').split(/[+-]/)[0];
+}
+function compareVersions(a, b) {
+  const pa = normalizeVersion(a).split('.').map((x) => Number.parseInt(x, 10) || 0);
+  const pb = normalizeVersion(b).split('.').map((x) => Number.parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function updateStateFromRelease(release, checkedAt = new Date().toISOString()) {
+  const currentVersion = packageVersion();
+  const tag = release && (release.tag_name || release.name);
+  const latestVersion = normalizeVersion(tag);
+  if (!currentVersion || !latestVersion) return null;
+  const dmg = Array.isArray(release.assets)
+    ? release.assets.find((a) => /\.dmg$/i.test(a.name || '') && a.browser_download_url)
+    : null;
+  return {
+    currentVersion,
+    latestVersion,
+    available: compareVersions(latestVersion, currentVersion) > 0,
+    releaseUrl: release.html_url || `https://github.com/alnimra/ai-acct-autopilot/releases/tag/v${latestVersion}`,
+    downloadUrl: dmg && dmg.browser_download_url || null,
+    checkedAt,
+  };
+}
+function releaseFromLatestLocation(location) {
+  const m = String(location || '').match(/\/releases\/tag\/([^/?#]+)/);
+  if (!m) return null;
+  const tag = decodeURIComponent(m[1]);
+  const version = normalizeVersion(tag);
+  return {
+    tag_name: tag,
+    html_url: `https://github.com/alnimra/ai-acct-autopilot/releases/tag/${tag}`,
+    assets: [{
+      name: `AI-Acct-Autopilot-${version}.dmg`,
+      browser_download_url: `https://github.com/alnimra/ai-acct-autopilot/releases/download/${tag}/AI-Acct-Autopilot-${version}.dmg`,
+    }],
+  };
+}
+function fetchLatestRelease(timeout = 6000) {
+  return new Promise((resolve) => {
+    const req = https.get(UPDATE_URL, {
+      timeout,
+      headers: { 'user-agent': `ai-acct-autopilot/${packageVersion() || 'unknown'}`, accept: 'application/vnd.github+json' },
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return resolve(releaseFromLatestLocation(res.headers.location));
+        }
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(body)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+function fetchLatestReleaseRedirect(timeout = 6000) {
+  return new Promise((resolve) => {
+    const req = https.get(UPDATE_LATEST_URL, {
+      timeout,
+      headers: { 'user-agent': `ai-acct-autopilot/${packageVersion() || 'unknown'}` },
+    }, (res) => {
+      res.resume();
+      resolve(releaseFromLatestLocation(res.headers.location));
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+function readUpdateCache() {
+  const c = readJson(UPDATE_CACHE);
+  return c && c.currentVersion === packageVersion() ? c : null;
+}
+function writeUpdateCache(update) {
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    const tmp = `${UPDATE_CACHE}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(update), { mode: 0o600 });
+    fs.renameSync(tmp, UPDATE_CACHE);
+  } catch {}
+}
+async function checkForUpdate() {
+  const debug = (...args) => { if (process.env.AI_ACCT_DEBUG_UPDATE === '1') console.error('[update-check]', ...args); };
+  if (process.env.AI_ACCT_DISABLE_UPDATE_CHECK === '1') { debug('disabled'); return null; }
+  const cached = readUpdateCache();
+  const ttl = Number.isFinite(UPDATE_CHECK_MAX_AGE_MS) ? UPDATE_CHECK_MAX_AGE_MS : 6 * 60 * 60_000;
+  if (cached && cached.checkedAt && now() - new Date(cached.checkedAt).getTime() < ttl) { debug('cache-hit', cached.latestVersion, cached.available); return cached; }
+  debug('fetch', UPDATE_URL);
+  let release = await fetchLatestRelease();
+  if (!release && UPDATE_LATEST_URL) {
+    debug('fallback', UPDATE_LATEST_URL);
+    release = await fetchLatestReleaseRedirect();
+  }
+  if (!release) { debug('fetch-failed'); return cached; }
+  const update = updateStateFromRelease(release);
+  debug('mapped', update && update.latestVersion, update && update.available);
+  if (update) writeUpdateCache(update);
+  return update || cached;
+}
+
 // ════════════════════════ CLAUDE provider ════════════════════════
 function accountNames() {
   let files = [];
@@ -194,6 +330,9 @@ function accountNames() {
     .map((f) => f.slice(0, -5));
 }
 const isRecovery = (name) => name.startsWith('unsaved-live-');
+function activeClaudeName() {
+  try { return fs.readFileSync(path.join(DIR, '.active'), 'utf8').trim(); } catch { return ''; }
+}
 
 function liveEmail() {
   const cfg = readJson(CLAUDE_JSON);
@@ -263,7 +402,17 @@ function tokenStale(name) {
 async function fetchUsage() {
   const r = await run(acctBin, ['usage', '--json'], 120_000);
   if (!r.ok) return null;
-  try { return JSON.parse(r.stdout); } catch { return null; }
+  try { return normalizeClaudeReport(JSON.parse(r.stdout)); } catch { return null; }
+}
+
+function normalizeClaudeReport(report) {
+  if (!report || typeof report !== 'object') return report;
+  const selected = typeof report.selected === 'string' ? report.selected.trim() : '';
+  if (selected && Array.isArray(report.results) && report.results.some((r) => r && r.account === selected)) {
+    report.active = selected;
+    for (const result of report.results) result.active = result.account === selected;
+  }
+  return report;
 }
 
 // seven_day_sonnet exists in the API response too (only for accounts with an
@@ -474,9 +623,60 @@ function codexUse(email) {
   const file = path.join(CODEX_DIR, `${email}.json`);
   const target = readJson(file);
   if (!target || !target.tokens || !target.tokens.refresh_token) return { ok: false, error: `no usable saved codex account "${email}"` };
+  const id = codexIdentity(target);
+  if (id && id.email && id.email !== email) return { ok: false, error: `saved codex account "${email}" contains credentials for "${id.email}"` };
   codexSnapshotActive();
   const { _watchMeta, ...clean } = target;
   try { atomicWrite(CODEX_AUTH, JSON.stringify(clean, null, 2)); } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  return { ok: true };
+}
+
+function removeFiles(files) {
+  for (const file of files) {
+    try { fs.rmSync(file, { force: true }); } catch (e) {
+      return { ok: false, error: `Failed to remove ${path.basename(file)}: ${String(e && e.message || e)}`, code: 'remove-failed' };
+    }
+    if (fs.existsSync(file)) return { ok: false, error: `Failed to remove ${path.basename(file)}.`, code: 'remove-failed' };
+  }
+  return { ok: true };
+}
+
+function removeClaudeAccount(name) {
+  if (!name) return { ok: false, error: 'missing Claude account name', code: 'missing-account' };
+  if (!accountNames().includes(name)) return { ok: false, error: `No saved Claude account "${name}".`, code: 'not-found' };
+  if (isRecovery(name)) return { ok: false, error: 'Recovery snapshots cannot be removed here. Re-save or inspect them first.', code: 'recovery-account' };
+  const active = activeClaudeName();
+  const live = liveEmail();
+  const email = emailOf(name);
+  if (active === name || (live && (live === name || (email && live === email)))) {
+    return { ok: false, error: 'Switch to another Claude account before removing this one.', code: 'active-account' };
+  }
+  const removed = removeFiles([
+    path.join(DIR, `${name}.json`),
+    path.join(DIR, `${name}.json.bak`),
+    path.join(DIR, `${name}.meta`),
+    path.join(DIR, `${name}.meta.bak`),
+    path.join(DIR, `${name}.oauthAccount.json`),
+    path.join(DIR, `${name}.oauthAccount.json.bak`),
+    path.join(DIR, `${name}.oat`),
+    path.join(DIR, `${name}.oat.bak`),
+  ]);
+  if (!removed.ok) return removed;
+  journalAppend({ provider: 'claude', event: 'account-removed', account: name });
+  return { ok: true };
+}
+
+function removeCodexAccount(email) {
+  if (!email) return { ok: false, error: 'missing Codex account email', code: 'missing-account' };
+  if (!codexSavedAccounts().includes(email)) return { ok: false, error: `No saved Codex account "${email}".`, code: 'not-found' };
+  const active = codexIdentity(readJson(CODEX_AUTH));
+  if (active && active.email === email) return { ok: false, error: 'Switch to another Codex account before removing this one.', code: 'active-account' };
+  const removed = removeFiles([
+    path.join(CODEX_DIR, `${email}.json`),
+    path.join(CODEX_DIR, `${email}.json.bak`),
+  ]);
+  if (!removed.ok) return removed;
+  journalAppend({ provider: 'codex', event: 'account-removed', account: email });
   return { ok: true };
 }
 
@@ -716,7 +916,8 @@ if (argv[0] === 'codex-ensure') {
       const r = codexUse(target.name);
       if (r.ok) {
         journalAppend({ provider: 'codex', event: 'switch', from: id.email, to: target.name, reason: `launch ensure: ${id.email} ${Math.round(100 - usage.worst)}% left` });
-        notify('ai-acct-autopilot: Codex switched at launch', `${id.email} → ${target.name}`);
+        const { restarted, unsupervised } = await codexRestartSessions(null);
+        notify('ai-acct-autopilot: Codex switched at launch', `${id.email} → ${target.name}${restarted ? ` — resuming ${restarted} running session(s)` : ''}${unsupervised ? `; ${unsupervised} pre-shim session(s) need manual restart` : ''}`);
         if (!flag('--quiet')) console.error(`[ai-acct-autopilot] codex account switched: ${id.email} → ${target.name}`);
       }
     } catch {}
@@ -735,6 +936,21 @@ function shimScript() {
 ${SHIM_MARK} v3 (node supervisor)
 exec node "${__filename}" codex-supervise -- "$@"
 `;
+}
+function readShimText(found) {
+  if (!found || !found.isShim) return '';
+  try { return fs.readFileSync(found.binPath, 'utf8'); } catch { return ''; }
+}
+function shimSupervisorPath(found) {
+  const m = readShimText(found).match(/exec node "([^"]+)" codex-supervise/);
+  return m ? m[1] : null;
+}
+function shimNeedsUpgrade(found) {
+  if (!found || !found.isShim) return false;
+  const cur = readShimText(found);
+  if (!cur) return false;
+  if (!cur.includes(`${SHIM_MARK} v3`)) return true;
+  return cur !== shimScript();
 }
 
 // Build the relaunch argv that resumes session `sid` while preserving the
@@ -886,7 +1102,11 @@ function findRealCodex(candidates = (CODEX_BIN_OVERRIDE ? [CODEX_BIN_OVERRIDE] :
 // positively-detected stock binary; unknown locations stay quiet.
 function shimHint(codexId, found) {
   if (!codexId || !codexId.email) return null;
-  if (!found || found.isShim) return null;
+  if (!found) return null;
+  if (found.isShim) {
+    if (shimNeedsUpgrade(found)) return 'shim installed with an older autopilot engine — run: ai-acct-autopilot codex-shim install';
+    return null;
+  }
   return 'shim not installed — codex switches won\'t auto-resume sessions · run: ai-acct-autopilot codex-shim install';
 }
 if (argv[0] === 'codex-shim') {
@@ -895,7 +1115,10 @@ if (argv[0] === 'codex-shim') {
   if (!found) { console.error('codex binary not found in known locations.'); process.exit(1); }
   const state = readJson(SHIM_STATE);
   if (sub === 'status') {
-    console.log(found.isShim ? `shim INSTALLED at ${found.binPath} (real: ${state && state.realTarget})`
+    console.log(found.isShim
+      ? (shimNeedsUpgrade(found)
+        ? `shim OUTDATED at ${found.binPath} (supervisor: ${shimSupervisorPath(found) || 'unknown'}, real: ${state && state.realTarget}) — run: ai-acct-autopilot codex-shim install`
+        : `shim INSTALLED at ${found.binPath} (real: ${state && state.realTarget})`)
       : `shim not installed — ${found.binPath} is the stock codex`);
     process.exit(0);
   }
@@ -903,9 +1126,9 @@ if (argv[0] === 'codex-shim') {
     let realTarget;
     if (found.isShim) {
       const cur = fs.readFileSync(found.binPath, 'utf8');
-      if (cur.includes(`${SHIM_MARK} v3`)) { console.log('shim v3 already installed.'); process.exit(0); }
       realTarget = (state && state.realTarget) || null;   // upgrade older shim
       if (!realTarget) { console.error('shim state missing; run codex-shim uninstall first.'); process.exit(1); }
+      if (cur.includes(`${SHIM_MARK} v3`) && cur === shimScript()) { console.log('shim v3 already installed.'); process.exit(0); }
     } else if (fs.lstatSync(found.binPath).isSymbolicLink()) {
       realTarget = fs.realpathSync(found.binPath);
     } else {
@@ -915,10 +1138,11 @@ if (argv[0] === 'codex-shim') {
       realTarget = `${found.binPath}.real`;
       fs.renameSync(found.binPath, realTarget);
     }
-    fs.writeFileSync(SHIM_STATE, JSON.stringify({ binPath: found.binPath, realTarget, installedAt: new Date().toISOString(), version: 3 }, null, 2));
+    const installedAt = (state && state.installedAt) || new Date().toISOString();
+    fs.writeFileSync(SHIM_STATE, JSON.stringify({ binPath: found.binPath, realTarget, installedAt, updatedAt: new Date().toISOString(), version: 3 }, null, 2));
     fs.rmSync(found.binPath, { force: true });
     fs.writeFileSync(found.binPath, shimScript(), { mode: 0o755 });
-    console.log(`shim v3 (node supervisor) installed: ${found.binPath} → ensure + supervise → ${realTarget}`);
+    console.log(`shim v3 (node supervisor) installed/updated: ${found.binPath} → ensure + supervise → ${realTarget}`);
     console.log('On watcher-initiated account switches, supervised codex sessions auto-resume their threads.');
     console.log('NOTE: an npm upgrade of @openai/codex restores the stock binary (fail-safe); re-run codex-shim install after upgrades.');
     process.exit(0);
@@ -933,6 +1157,166 @@ if (argv[0] === 'codex-shim') {
   }
   console.error('usage: ai-acct-autopilot codex-shim [status|install|uninstall]');
   process.exit(1);
+}
+
+function appStateBase() {
+  return { reauth: new Set(), holdReason: null, codexHold: null, codexProbes: new Map(), stats: usageStats.cachedStats(), statsProgress: null, update: null };
+}
+async function collectAppState() {
+  const state = appStateBase();
+  let report = await fetchUsage();
+  if (report) persistEmails(report);
+  try { state.codexProbes = await codexProbeAll(); } catch {}
+  try { state.update = await checkForUpdate(); } catch {}
+  return buildAppState(report, state);
+}
+
+function appActionResult({ action, provider = null, ok, message, changed = false, needsRefresh = false, userActionRequired = false, errorCode = null, stderr = '', data = null }) {
+  return {
+    ok: !!ok,
+    action,
+    provider,
+    message: message || (ok ? 'Done.' : 'Action failed.'),
+    changed: !!changed,
+    needsRefresh: !!needsRefresh,
+    userActionRequired: !!userActionRequired,
+    errorCode,
+    stderrTail: stderrTail(stderr),
+    data,
+  };
+}
+function resultFromRun(action, provider, r, successMessage, { changed = true, needsRefresh = true, userActionRequired = false } = {}) {
+  if (r.ok) return appActionResult({ action, provider, ok: true, message: successMessage, changed, needsRefresh, stderr: r.stderr });
+  return appActionResult({
+    action, provider, ok: false,
+    message: r.timedOut ? 'Action timed out. Try again.' : 'Action failed.',
+    changed: false, needsRefresh: false, userActionRequired,
+    errorCode: r.timedOut ? 'timeout' : `exit-${r.code || 1}`,
+    stderr: r.stderr || r.error || r.stdout,
+  });
+}
+async function runSelfSubcommand(args, timeout = 180_000) {
+  return run(process.execPath, [__filename, ...args], timeout);
+}
+
+if (argv[0] === 'app-state') {
+  (async () => {
+    try { jsonOut(await collectAppState()); }
+    catch (e) { jsonOut(appActionResult({ action: 'app-state', ok: false, message: 'Failed to collect app state.', errorCode: 'state-failed', stderr: String(e && e.stack || e) }), 1); }
+  })();
+}
+if (argv[0] === 'app-diagnose') {
+  (async () => {
+    const found = findRealCodex();
+    const p = menubarPaths();
+    const running = await menubarRunning(p);
+    jsonOut({
+      ok: true,
+      ts: new Date().toISOString(),
+      platform: process.platform,
+      node: { path: process.execPath, version: process.version },
+      engine: { script: __filename, version: packageVersion() },
+      claude: { acctBin, accountsDir: DIR, savedCount: accountNames().length, liveEmail: liveEmail() },
+      codex: {
+        authPresent: !!readJson(CODEX_AUTH),
+        savedCount: codexSavedAccounts().length,
+        shim: found ? { binPath: found.binPath, installed: !!found.isShim } : null,
+      },
+      menubar: {
+        app: p.app,
+        appExists: fs.existsSync(p.bin),
+        agent: MENUBAR_AGENT,
+        agentExists: fs.existsSync(MENUBAR_AGENT),
+        running,
+      },
+    });
+  })();
+}
+if (argv[0] === 'app-action') {
+  (async () => {
+    const appArgs = argv.slice(1).filter((a) => a !== '--json');
+    const action = appArgs[0] || '';
+    const value = appArgs[1] || '';
+    let result;
+    if (!action) {
+      result = appActionResult({ action: 'app-action', ok: false, message: 'Missing action.', errorCode: 'missing-action', userActionRequired: true });
+    } else if (action === 'claude-use') {
+      if (!value) result = appActionResult({ action, provider: 'claude', ok: false, message: 'Choose a Claude account first.', errorCode: 'missing-account', userActionRequired: true });
+      else {
+        const from = activeClaudeName() || liveEmail() || 'manual';
+        const r = await run(acctBin, ['use', value], 60_000);
+        result = resultFromRun(action, 'claude', r, `Switched Claude to ${value}.`);
+        if (r.ok) journalAppend({ provider: 'claude', event: 'switch', from, to: value, reason: 'manual app-action' });
+      }
+    } else if (action === 'claude-save') {
+      if (!value) result = appActionResult({ action, provider: 'claude', ok: false, message: 'Enter a Claude account name or email first.', errorCode: 'missing-account', userActionRequired: true });
+      else result = resultFromRun(action, 'claude', await run(acctBin, ['save', value], 60_000), `Saved Claude account ${value}.`);
+    } else if (action === 'claude-add') {
+      if (!value) result = appActionResult({ action, provider: 'claude', ok: false, message: 'Enter a Claude account name or email first.', errorCode: 'missing-account', userActionRequired: true });
+      else result = resultFromRun(action, 'claude', await run(acctBin, ['add', value], 180_000), `Added Claude account ${value}.`, { userActionRequired: true });
+    } else if (action === 'claude-remove') {
+      const r = removeClaudeAccount(value);
+      result = r.ok
+        ? appActionResult({ action, provider: 'claude', ok: true, message: `Removed Claude account ${value}.`, changed: true, needsRefresh: true, data: { account: value } })
+        : appActionResult({ action, provider: 'claude', ok: false, message: r.error, errorCode: r.code || 'remove-failed', userActionRequired: true });
+    } else if (action === 'codex-save') {
+      const email = codexSnapshotActive();
+      result = email
+        ? appActionResult({ action, provider: 'codex', ok: true, message: `Saved current Codex account ${email}.`, changed: true, needsRefresh: true, data: { email } })
+        : appActionResult({ action, provider: 'codex', ok: false, message: 'No usable Codex ChatGPT login found.', errorCode: 'codex-auth-missing', userActionRequired: true });
+    } else if (action === 'codex-use') {
+      if (!value) result = appActionResult({ action, provider: 'codex', ok: false, message: 'Choose a Codex account first.', errorCode: 'missing-account', userActionRequired: true });
+      else {
+        const cur = codexIdentity(readJson(CODEX_AUTH));
+        const r = cur && cur.email === value ? { ok: true, already: true } : codexUse(value);
+        if (!r.ok) result = appActionResult({ action, provider: 'codex', ok: false, message: r.error || 'Codex switch failed.', errorCode: 'codex-use-failed', userActionRequired: true });
+        else {
+          let restart = { restarted: 0, unsupervised: 0 };
+          if (!r.already) {
+            journalAppend({ provider: 'codex', event: 'switch', from: cur && cur.email || 'manual', to: value, reason: 'manual app-action' });
+            restart = await codexRestartSessions(null);
+          }
+          const msg = r.already
+            ? `${value} is already active.`
+            : `Switched Codex to ${value}.${restart.restarted ? ` Restarting ${restart.restarted} supervised session(s).` : ''}${restart.unsupervised ? ` ${restart.unsupervised} pre-shim session(s) need manual restart.` : ''}`;
+          result = appActionResult({
+            action, provider: 'codex', ok: true, message: msg,
+            changed: !r.already, needsRefresh: true,
+            userActionRequired: restart.unsupervised > 0,
+            data: { email: value, restarted: restart.restarted, unsupervised: restart.unsupervised },
+          });
+        }
+      }
+    } else if (action === 'codex-add') {
+      const r = await runSelfSubcommand(['codex-add', ...(value ? [value] : [])], 300_000);
+      if (r.ok) {
+        const added = (r.stdout.match(/Added '([^']+)'/) || [])[1] || value || null;
+        result = appActionResult({
+          action, provider: 'codex', ok: true, message: 'Added Codex account.',
+          changed: true, needsRefresh: true, userActionRequired: true,
+          data: added ? { email: added } : null,
+        });
+      } else {
+        result = resultFromRun(action, 'codex', r, 'Added Codex account.', { userActionRequired: true });
+      }
+    } else if (action === 'codex-remove') {
+      const r = removeCodexAccount(value);
+      result = r.ok
+        ? appActionResult({
+          action, provider: 'codex', ok: true,
+          message: `Removed Codex account ${value}.`,
+          changed: true, needsRefresh: true, data: { email: value },
+        })
+        : appActionResult({ action, provider: 'codex', ok: false, message: r.error, errorCode: r.code || 'remove-failed', userActionRequired: true });
+    } else if (action === 'codex-shim-install') {
+      result = resultFromRun(action, 'codex', await runSelfSubcommand(['codex-shim', 'install'], 120_000), 'Installed Codex session resume support.');
+    } else if (action === 'codex-shim-uninstall') {
+      result = resultFromRun(action, 'codex', await runSelfSubcommand(['codex-shim', 'uninstall'], 120_000), 'Removed Codex session resume support.');
+    } else {
+      result = appActionResult({ action, ok: false, message: `Unknown action: ${action}`, errorCode: 'unknown-action', userActionRequired: true });
+    }
+    jsonOut(result, result.ok ? 0 : 1);
+  })();
 }
 
 // ════════════════════════ menubar app ════════════════════════
@@ -974,6 +1358,16 @@ function menubarLaunchAgent(binPath) {
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 </dict></plist>
 `;
+}
+async function menubarRunning(p = menubarPaths()) {
+  const pg = await run(PGREP_BIN, ['-x', 'AIAcctAutopilot'], 15_000);
+  const pids = pg.stdout.split(/\s+/).map((s) => Number(s)).filter(Number.isFinite);
+  for (const pid of pids) {
+    const files = await run(LSOF_BIN, ['-p', String(pid)], 15_000);
+    if (files.stdout.includes(p.bin)) return true;
+  }
+  const ps = await run(PS_BIN, ['-axo', 'command='], 15_000);
+  return ps.stdout.split('\n').some((l) => l.includes(p.bin));
 }
 async function menubarBuild({ fromSource = false } = {}) {
   const p = menubarPaths();
@@ -1042,8 +1436,7 @@ if (argv[0] === 'menubar') {
     }
     if (sub === 'status') {
       const cfg = readJson(path.join(p.resources, 'config.json'));
-      const ps = await run(PS_BIN, ['-axo', 'command=']);
-      const running = ps.stdout.split('\n').some((l) => l.includes(p.bin));
+      const running = await menubarRunning(p);
       console.log(`app:    ${fs.existsSync(p.bin) ? `${p.app}${cfg ? ` (built ${cfg.builtAt})` : ''}` : 'not built — run: ai-acct-autopilot menubar install'}`);
       console.log(`agent:  ${fs.existsSync(MENUBAR_AGENT) ? MENUBAR_AGENT : 'not installed'}`);
       console.log(`state:  ${running ? 'running' : 'not running'}`);
@@ -1061,10 +1454,49 @@ if (argv[0] === 'menubar') {
   })();
 }
 
-// One status snapshot per tick for the menu bar app: the same data render()
-// draws, as JSON. Alert levels follow the terminal palette contract — red
-// means "needs the user", amber means "handled / informational".
-function menubarSnapshot(report, state) {
+function readinessFor(app) {
+  const items = [];
+  const add = (id, level, text, action = null) => items.push({ id, level, text, action });
+  if (!app.claude.ok) add('claude-usage', 'red', 'Claude usage check failed', 'retry');
+  if (!app.claude.accounts.length) add('claude-empty', 'amber', 'No Claude accounts saved', 'claude-add');
+  if (!app.codex.active) add('codex-empty', 'amber', 'No Codex ChatGPT login found', 'codex-add');
+  if (app.codex.active && !app.codex.accounts.some((a) => a.active && a.saved)) add('codex-unsaved', 'amber', 'Active Codex account is not saved', 'codex-save');
+  if (app.codex.accounts.some((a) => a.dead)) add('codex-reauth', 'red', 'A saved Codex account needs re-login', 'codex-add');
+  const shimAlert = app.alerts.find((a) => a.action === 'install-shim');
+  if (app.shim && app.shim.action === 'codex-shim-install') {
+    add('codex-shim', 'amber', app.shim.status === 'outdated'
+      ? 'Codex session resume support needs an update'
+      : 'Codex session resume support is not installed', 'codex-shim-install');
+  } else if (shimAlert) {
+    add('codex-shim', 'amber', 'Codex session resume support is not installed', 'codex-shim-install');
+  }
+  const red = items.some((i) => i.level === 'red');
+  return {
+    status: red ? 'red' : items.length ? 'amber' : 'green',
+    primaryAction: items[0] && items[0].action || null,
+    items,
+    complete: items.length === 0,
+  };
+}
+
+function shimStateFor(codexId) {
+  const found = findRealCodex();
+  if (!codexId || !codexId.email) return { status: 'unknown', message: 'No Codex login found', action: 'codex-add' };
+  if (!found) return { status: 'unknown', message: 'Codex binary not found in known locations', action: null };
+  if (found.isShim) {
+    if (shimNeedsUpgrade(found)) {
+      const supervisor = shimSupervisorPath(found);
+      return { status: 'outdated', message: `Session resume support uses an older autopilot engine${supervisor ? ` (${supervisor})` : ''}`, action: 'codex-shim-install' };
+    }
+    return { status: 'installed', message: `Session resume support installed at ${found.binPath}`, action: null };
+  }
+  return { status: 'missing', message: `Session resume support not installed at ${found.binPath}`, action: 'codex-shim-install' };
+}
+
+// One status snapshot per tick for the menu bar app and one-shot app-state:
+// same builder, different consumers. Alert levels follow the terminal palette
+// contract — red means "needs the user", amber means "handled / informational".
+function buildAppState(report, state) {
   const alerts = [];
   const amber = (text) => alerts.push({ level: 'amber', text });
   const red = (text) => alerts.push({ level: 'red', text });
@@ -1088,7 +1520,8 @@ function menubarSnapshot(report, state) {
   const usage = codexUsage();
   const probes = state.codexProbes || new Map();
   const codex = { active: (codexId && codexId.email) || null, plan: (usage && usage.plan) || (codexId && codexId.plan) || null, accounts: [] };
-  const hint = shimHint(codexId, findRealCodex());
+  const foundCodex = findRealCodex();
+  const hint = shimHint(codexId, foundCodex);
   // action: the menu bar app renders a one-click "install the shim" item
   if (hint) alerts.push({ level: 'amber', text: hint, action: 'install-shim' });
   if (codex.active) {
@@ -1099,7 +1532,7 @@ function menubarSnapshot(report, state) {
       const dead = !!(p && !p.ok && (p.status === 401 || p.status === 403));
       const rows = (p && p.ok && p.rows) || (isActive && usage && usage.rows) || null;
       const worst = rows ? worstUsed(rows) : null;
-      if (dead) amber(`codex ${email}: re-login needed — run: ai-acct-autopilot codex-add ${email}`);
+      if (dead) red(`codex ${email}: re-login needed — run: ai-acct-autopilot codex-add ${email}`);
       codex.accounts.push({
         email, active: isActive, saved: saved.includes(email), dead, rows: rows || [],
         percentLeft: worst === null ? null : Math.round(100 - worst),
@@ -1110,21 +1543,33 @@ function menubarSnapshot(report, state) {
 
   if (state.holdReason) amber(state.holdReason);
   if (state.codexHold) amber(state.codexHold);
+  if (state.update && state.update.available) {
+    alerts.push({ level: 'amber', text: `AI Acct Autopilot ${state.update.latestVersion} is available`, action: 'update' });
+  }
   const events = journalTail(5);
   for (const e of events) {
     if (e.event === 'switch-failed' && now() - new Date(e.ts).getTime() < 15 * 60_000) {
       red(`${e.provider || 'claude'} switch FAILED ${e.from} → ${e.to}`);
     }
   }
-  return {
+  const app = {
     v: 1, ts: new Date().toISOString(),
     mode: NO_SWITCH ? 'monitor' : 'auto', threshold: THRESHOLD, interval: INTERVAL,
     attention: alerts.some((a) => a.level === 'red') ? 'red' : alerts.length ? 'amber' : 'ok',
     alerts, claude, codex,
+    readiness: null,
+    shim: shimStateFor(codexId),
+    update: state.update || null,
     stats: state.stats || null, statsProgress: state.statsProgress || null,
     events: events.slice().reverse(),
   };
+  app.readiness = readinessFor(app);
+  app.attention = app.attention === 'red' || app.readiness.status === 'red' ? 'red'
+    : app.attention === 'amber' || app.readiness.status === 'amber' ? 'amber'
+      : 'ok';
+  return app;
 }
+const menubarSnapshot = buildAppState;
 
 // ════════════════════════ render ════════════════════════
 function bar(used, width) {
@@ -1326,9 +1771,16 @@ async function tick(state) {
   // 3. self-heal active (re-snapshot from keychain on 401), then autopilots
   if (report) {
     const healed = await healActive(report, state);
-    if (!healed) await claudeAutopilot(report, state);
+    if (!healed) {
+      await claudeAutopilot(report, state);
+      if (state.justSwitched && state.justSwitched.startsWith('claude ')) {
+        const nextReport = await fetchUsage();
+        if (nextReport) { report = nextReport; state.lastReport = nextReport; persistEmails(nextReport); }
+      }
+    }
   }
   await codexAutopilot(state);
+  try { state.update = await checkForUpdate(); } catch {}
   // 4. render
   render(report || state.lastReport, state);
   state.justSwitched = null;
@@ -1398,6 +1850,15 @@ function testDecision() {
   check('shim: tui resume keeps flags, drops prompt',
     JSON.stringify(buildResumeArgs([...SS, 'fix the bug'], 'SID')) === JSON.stringify([...SS, 'resume', 'SID']));
   check('shim: bare tui resume', JSON.stringify(buildResumeArgs([], 'SID')) === JSON.stringify(['resume', 'SID']));
+  const update = updateStateFromRelease({ tag_name: 'v9.8.7', html_url: 'https://example.test/release',
+    assets: [{ name: 'AI-Acct-Autopilot-9.8.7.dmg', browser_download_url: 'https://example.test/app.dmg' }] });
+  check('update: latest release maps DMG asset and compares newer',
+    update && update.available === true && update.latestVersion === '9.8.7' && update.downloadUrl === 'https://example.test/app.dmg');
+  const noUpdate = updateStateFromRelease({ tag_name: `v${packageVersion()}`, html_url: 'https://example.test/release', assets: [] });
+  check('update: current version is not offered as an update', noUpdate && noUpdate.available === false);
+  const redirectUpdate = updateStateFromRelease(releaseFromLatestLocation('https://github.com/alnimra/ai-acct-autopilot/releases/tag/v9.8.7'));
+  check('update: GitHub latest redirect maps to standard DMG URL',
+    redirectUpdate && redirectUpdate.downloadUrl.endsWith('/v9.8.7/AI-Acct-Autopilot-9.8.7.dmg'));
 
   // bucket selection: regular limit beats special model-family buckets
   let buckets = {
@@ -1454,7 +1915,7 @@ function testDecision() {
 if (flag('--test-decision')) testDecision();
 
 async function main() {
-  const state = { reauth: new Set(), holdReason: null, codexHold: null, justSwitched: null, lastHealTry: 0, allHotNotified: false, codexAllHot: false, lastReport: null, footerRow: 0, stats: null, statsProgress: null };
+  const state = { reauth: new Set(), holdReason: null, codexHold: null, justSwitched: null, lastHealTry: 0, allHotNotified: false, codexAllHot: false, lastReport: null, footerRow: 0, stats: null, statsProgress: null, update: null };
   if (!PLAIN) {
     process.stdout.write('\x1b[2J\x1b[H\x1b[?25l');
     const cleanup = () => { process.stdout.write('\x1b[?25h\x1b[0m\n'); process.exit(0); };
@@ -1463,10 +1924,17 @@ async function main() {
   state.stats = usageStats.cachedStats();  // instant render from last scan
   let nextAt = now() + INTERVAL * 1000;
   let wake = null;
+  let refreshQueued = false;
+  const runTick = async () => { try { await tick(state); } catch {} };
   // SIGUSR2 = "tick now" (the menu bar app's Refresh / post-switch poke).
-  // Registered before the first tick so an early poke can't kill the process.
+  // Registered before the first tick so an early poke can't kill the process;
+  // queued so pokes during a running tick are not lost.
   // (SIGUSR1 is off limits: node reserves it for the inspector.)
-  process.on('SIGUSR2', () => { nextAt = now(); if (wake) wake(); });
+  process.on('SIGUSR2', () => {
+    refreshQueued = true;
+    nextAt = now();
+    if (wake) { const resume = wake; wake = null; resume(); }
+  });
 
   const runStats = async () => {
     try {
@@ -1489,10 +1957,20 @@ async function main() {
   }
   // the menu bar app dies → its read pipe closes → exit instead of crashing
   if (MENUBAR) process.stdout.on('error', () => process.exit(0));
+  if (MENUBAR && Number(process.env.AI_ACCT_MENUBAR_PARENT_PID || 0)) {
+    const parentPid = Number(process.env.AI_ACCT_MENUBAR_PARENT_PID);
+    setInterval(() => {
+      try { process.kill(parentPid, 0); } catch { process.exit(0); }
+    }, 2000).unref();
+  }
 
   runStats();                              // background; rerenders when done
   setInterval(runStats, 5 * 60_000);       // refresh stats every 5 min
-  await tick(state);
+  await runTick();
+  while (refreshQueued) {
+    refreshQueued = false;
+    await runTick();
+  }
 
   nextAt = now() + INTERVAL * 1000;
   setInterval(() => {        // per-second countdown on the footer line
@@ -1505,12 +1983,15 @@ async function main() {
     for (;;) {
       await new Promise((r) => { wake = r; setTimeout(r, Math.max(0, nextAt - now())); });
       wake = null;
+      do {
+        refreshQueued = false;
+        await runTick();
+      } while (refreshQueued);
       nextAt = now() + INTERVAL * 1000;
-      try { await tick(state); } catch {}
     }
   })();
 }
 
 // Subcommands exit on their own (codex-use asynchronously); only the
 // dashboard path runs the main loop.
-if (!['codex-save', 'codex-use', 'codex-list', 'codex-shim', 'codex-ensure', 'codex-supervise', 'codex-add', 'menubar'].includes(argv[0])) main();
+if (!['codex-save', 'codex-use', 'codex-list', 'codex-shim', 'codex-ensure', 'codex-supervise', 'codex-add', 'app-state', 'app-action', 'app-diagnose', 'menubar'].includes(argv[0])) main();
