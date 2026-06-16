@@ -45,8 +45,8 @@ with your own credentials.
 
 **Recommended Mac download:**
 
-1. Download
-   [AI-Acct-Autopilot-1.1.3.dmg](https://github.com/alnimra/ai-acct-autopilot/releases/download/v1.1.3/AI-Acct-Autopilot-1.1.3.dmg).
+1. Open the [latest GitHub release](https://github.com/alnimra/ai-acct-autopilot/releases/latest)
+   and download `AI-Acct-Autopilot-*.dmg`.
 2. Open the DMG.
 3. Drag **AI Acct Autopilot.app** to **Applications**.
 4. Open **AI Acct Autopilot** from Applications or Spotlight.
