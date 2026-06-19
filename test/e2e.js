@@ -362,6 +362,7 @@ function standardWorld(sb, { claudeActiveUsed = 50, codexActiveTok = 'tok-30' } 
   {
     const sb = sandbox('s7');
     standardWorld(sb);
+    sb.write('.claude/accounts/a@test.json', claudeBlob({ refresh: 'rt-bad' }));
     sb.write('fixtures/usage.json', JSON.stringify({ active: 'a@test', results: [
       { account: 'a@test', email: 'a@test', usage: { ok: false, status: 401 } },
       { account: 'b@test', email: 'b@test', usage: claudeUsage(10, 5) },
@@ -370,6 +371,7 @@ function standardWorld(sb, { claudeActiveUsed = 50, codexActiveTok = 'tok-30' } 
     check('401 active triggers keychain re-snapshot', sb.read('fixtures/calls.log').includes('save a@test'), sb.read('fixtures/calls.log'));
     check('snapshot journaled', sb.journal().some((e) => e.event === 'snapshot' && e.account === 'a@test'));
     check('active stale state rendered', r.stdout.includes('re-snapshotting'), r.stdout);
+    check('active 401 does not mark live account reauth', !r.stdout.includes('re-auth needed'), r.stdout);
   }
 
   // ── S8: codex hot → switch + supervised session restart (synthetic ps table)
@@ -767,6 +769,47 @@ exit 0`);
       && state.shim.status === 'missing' && state.shim.action === 'codex-shim-install', r.stdout + r.stderr);
     check('app-state shares menubar account mapping', state.claude.active === 'a@test' && state.codex.active === 'cx-a@test'
       && state.codex.accounts.some((a) => a.email === 'cx-b@test' && a.saved), JSON.stringify(state));
+    const claudeUnavailable = state.claude.accounts.find((a) => a.name === 'c@test');
+    check('app-state surfaces Claude usage failure reason', !!claudeUnavailable
+      && claudeUnavailable.usageStatus === 500
+      && /HTTP 500/.test(claudeUnavailable.usageMessage || ''),
+      JSON.stringify(claudeUnavailable));
+    const sbRefetch = sandbox('s19b-refetch-failure');
+    standardWorld(sbRefetch);
+    sbRefetch.write('fixtures/usage-first.json', JSON.stringify({ active: 'a@test', results: [
+      { account: 'a@test', email: 'a@test', subscriptionType: 'max', usage: claudeUsage(40, 20) },
+      { account: 'b@test', email: 'b@test', usage: { ok: false, status: 401 } },
+    ] }));
+    sbRefetch.sh('claude-acct', `case "$1" in
+  usage) if [ -f "${sbRefetch.home}/fixtures/usage-count" ]; then n=$(cat "${sbRefetch.home}/fixtures/usage-count"); else n=0; fi; n=$((n+1)); echo "$n" > "${sbRefetch.home}/fixtures/usage-count"; [ "$n" = "1" ] && cat "${sbRefetch.home}/fixtures/usage-first.json" || printf '{broken-json'; exit 0;;
+  save) echo "save $2" >> "${sbRefetch.home}/fixtures/calls.log"; exit 0;;
+esac
+exit 0`);
+    const refetchRun = runCli(sbRefetch, ['app-state', '--json'], { AI_ACCT_CODEX_BIN: stock });
+    const refetchState = JSON.parse(refetchRun.stdout);
+    const refetchAccount = refetchState.claude.accounts.find((a) => a.name === 'b@test');
+    check('app-state keeps first Claude report when post-refresh refetch fails', refetchRun.status === 0
+      && refetchState.claude.ok === true
+      && refetchState.claude.accounts.length === 2
+      && refetchAccount
+      && refetchAccount.usageStatus === 401
+      && /refreshing saved OAuth credentials/.test(refetchAccount.usageMessage || ''),
+      refetchRun.stdout + refetchRun.stderr);
+
+    const sbParallel = sandbox('s19b-parallel-codex-probes');
+    standardWorld(sbParallel, { codexActiveTok: 'tok-88' });
+    sbParallel.write('.codex/accounts/cx-b@test.json', codexBlob('cx-b@test', 'tok-88'));
+    sbParallel.write('.codex/accounts/cx-c@test.json', codexBlob('cx-c@test', 'tok-88'));
+    const parallelStarted = Date.now();
+    const parallelRun = runCli(sbParallel, ['app-state', '--json'], { AI_ACCT_CODEX_BIN: stock });
+    const parallelMs = Date.now() - parallelStarted;
+    const parallelState = JSON.parse(parallelRun.stdout);
+    check('app-state probes Codex accounts concurrently for responsive menu refresh', parallelRun.status === 0
+      && parallelMs < 5000
+      && parallelState.codex.accounts.length === 3
+      && parallelState.codex.accounts.every((a) => a.percentLeft === 12),
+      `ms=${parallelMs} stdout=${parallelRun.stdout} stderr=${parallelRun.stderr}`);
+
 
     const sbUpdate = sandbox('s19b-update');
     standardWorld(sbUpdate);

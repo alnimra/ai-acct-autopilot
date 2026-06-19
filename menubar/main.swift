@@ -41,6 +41,8 @@ struct ClaudeAccount: Decodable {
   let rows: [UsageRow]
   let percentLeft: Double?
   let trend: String?
+  let usageStatus: Int?
+  let usageMessage: String?
 }
 struct CodexAccount: Decodable {
   let email: String
@@ -488,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   var manageAccountsWindow: ManageAccountsWindowController?
   weak var tickerItem: NSMenuItem?
   var ignoreSnapshotsBefore: Date?
+  var watcherError: String?
 
   var autopilotEnabled: Bool {
     get { UserDefaults.standard.object(forKey: "autopilotEnabled") as? Bool ?? true }
@@ -576,10 +579,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       $0.hasPrefix("/") ? $0 : ((p as NSString).deletingLastPathComponent as NSString).appendingPathComponent($0)
     } ?? p }
     let discoverNode = { () -> String? in
-      if let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node"].first(where: { fm.isExecutableFile(atPath: $0) }) {
+      for node in ["/opt/homebrew/bin/node", "/usr/local/bin/node"] where fm.isExecutableFile(atPath: node) {
+        if self.nodeMajorVersion(node).map({ $0 >= 18 }) == true { return node }
+      }
+      if let node = self.shellWhich("node"), self.nodeMajorVersion(node).map({ $0 >= 18 }) == true {
         return node
       }
-      return self.shellWhich("node")
+      return nil
     }
     if let resources = Bundle.main.resourceURL?.path {
       let bundledScript = resources + "/engine/bin/ai-acct-autopilot.js"
@@ -617,6 +623,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     return (out?.isEmpty ?? true) ? nil : out
   }
 
+  func nodeMajorVersion(_ node: String) -> Int? {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: node)
+    proc.arguments = ["-p", "process.versions.node.split('.')[0]"]
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = FileHandle.nullDevice
+    guard (try? proc.run()) != nil else { return nil }
+    proc.waitUntilExit()
+    guard proc.terminationStatus == 0 else { return nil }
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return out.flatMap(Int.init)
+  }
+
   // MARK: child process (the node watcher)
 
   func spawnChild() {
@@ -638,13 +659,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     let pipe = Pipe()
     proc.standardOutput = pipe
-    proc.standardError = FileHandle.nullDevice
+    let errPipe = Pipe()
+    proc.standardError = errPipe
     pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
       let data = handle.availableData
       if data.isEmpty { return }
       DispatchQueue.main.async { self?.consume(data) }
     }
-    proc.terminationHandler = { [weak self] _ in
+    proc.terminationHandler = { [weak self] finished in
+      let errText = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
       DispatchQueue.main.async {
         guard let self = self, !self.quitting else { return }
         pipe.fileHandleForReading.readabilityHandler = nil
@@ -652,6 +676,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
           self.restarting = false
           self.spawnChild()
         } else {
+          let detail: String
+          if let errText = errText, !errText.isEmpty {
+            detail = errText.split(separator: "\n").suffix(3).joined(separator: "\n")
+          } else {
+            detail = "exit status \(finished.terminationStatus)"
+          }
+          self.watcherError = "watcher exited — retrying: \(detail)"
+          if self.snapshot == nil {
+            self.setStatusImage(claudeLeft: nil, codexLeft: nil, showCodex: true, threshold: 10, tooltip: self.watcherError)
+          }
           // crashed / killed: show stale state, come back in 3s
           DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.spawnChild() }
         }
@@ -688,6 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     if !force, let cutoff = ignoreSnapshotsBefore, let ts = parseISO(snap.ts), ts < cutoff {
       return
     }
+    watcherError = nil
     snapshot = snap
     updateStatusTitle()
     maybePromptUpdate(snap)
@@ -728,13 +763,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       if acct.name == name { found = true }
       return ClaudeAccount(name: acct.name, email: acct.email, subscription: acct.subscription,
         active: acct.name == name, recovery: acct.recovery, reauth: acct.reauth,
-        rows: acct.rows, percentLeft: acct.percentLeft, trend: acct.trend)
+        rows: acct.rows, percentLeft: acct.percentLeft, trend: acct.trend,
+        usageStatus: acct.usageStatus, usageMessage: acct.usageMessage)
     }
     if !found {
       let source = copyCurrentUsage ? current : nil
       accounts.insert(ClaudeAccount(name: name, email: source?.email, subscription: source?.subscription,
         active: true, recovery: false, reauth: false, rows: source?.rows ?? [],
-        percentLeft: source?.percentLeft, trend: source?.trend), at: 0)
+        percentLeft: source?.percentLeft, trend: source?.trend,
+        usageStatus: source?.usageStatus, usageMessage: source?.usageMessage), at: 0)
     }
     return ClaudeSection(ok: section.ok, active: name, accounts: accounts)
   }
@@ -837,9 +874,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   func toolEnvironment(_ cfg: Config) -> [String: String] {
     var env = ProcessInfo.processInfo.environment
-    let toolDir = (cfg.claudeAcct as NSString).deletingLastPathComponent
-    let nodeDir = (cfg.node as NSString).deletingLastPathComponent
-    env["PATH"] = "\(toolDir):\(nodeDir):" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    var paths: [String] = []
+    for p in [cfg.claudeAcct, cfg.script, cfg.node] {
+      let dir = (p as NSString).deletingLastPathComponent
+      if !dir.isEmpty && !paths.contains(dir) { paths.append(dir) }
+    }
+    paths.append(env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    env["PATH"] = paths.joined(separator: ":")
     env["AI_ACCT_MENUBAR_APP"] = Bundle.main.bundlePath
     return env
   }
@@ -934,7 +975,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     if UserDefaults.standard.string(forKey: key) == latest { return }
     UserDefaults.standard.set(latest, forKey: key)
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-      guard let self = self, let current = update.currentVersion else { return }
+      guard let self = self else { return }
+      let current = update.currentVersion ?? "unknown"
       let alert = NSAlert()
       alert.messageText = "AI Acct Autopilot \(latest) is available"
       alert.informativeText = "You are running \(current). Download the latest signed DMG from GitHub Releases."
@@ -984,12 +1026,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       return
     }
     guard let s = snapshot else {
-      menu.addItem(label([("starting watcher — first tick can take a few seconds…", Palette.grey)]))
+      if let watcherError = watcherError {
+        menu.addItem(label([("▲ \(watcherError)", Palette.red)], size: 12))
+      } else {
+        menu.addItem(label([("starting watcher — first tick can take a few seconds…", Palette.grey)]))
+      }
       menu.addItem(.separator())
       menu.addItem(actionItem("Quit", #selector(quit), key: "q"))
       return
     }
 
+    if let watcherError = watcherError {
+      menu.addItem(label([("▲ \(watcherError)", Palette.red)], size: 12))
+      menu.addItem(.separator())
+    }
     for alert in s.alerts {
       let color = alert.level == "red" ? Palette.red : Palette.amber
       menu.addItem(label([("▲ \(alert.text)", color)]))
@@ -1013,7 +1063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       if acct.recovery { meta.append(("recovered snapshot", Palette.amber)) }
       menu.addItem(viewItem(accountRow(dotColor: acct.active ? Palette.green : NSColor.quaternaryLabelColor,
         name: acct.name, nameColor: acct.active ? Palette.orange : Palette.text, meta: meta)))
-      addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold)
+      addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold, emptyMessage: acct.usageMessage)
       if !acct.active && !acct.recovery {
         let item = actionItem("      switch to \(acct.name)", #selector(switchClaude(_:)))
         item.representedObject = acct.name
@@ -1034,7 +1084,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       if acct.active && !acct.saved { meta.append(("not snapshotted — codex-save", Palette.amber)) }
       menu.addItem(viewItem(accountRow(dotColor: acct.active ? Palette.green : NSColor.quaternaryLabelColor,
         name: acct.email, nameColor: acct.active ? Palette.orange : Palette.text, meta: meta)))
-      addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold)
+      addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold, emptyMessage: nil)
       if !acct.active && !acct.dead && acct.saved {
         // supervised running sessions auto-resume on the new account; the
         // shim alert above covers the unshimmed case
@@ -1177,9 +1227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     return v
   }
 
-  func addUsageRows(_ rows: [UsageRow], trend: String?, threshold: Double) {
+  func addUsageRows(_ rows: [UsageRow], trend: String?, threshold: Double, emptyMessage: String?) {
     if rows.isEmpty {
-      menu.addItem(label([("      usage unknown", Palette.grey)], size: 12))
+      menu.addItem(label([("      \(emptyMessage ?? "usage unknown")", Palette.grey)], size: 12))
       return
     }
     for row in rows {
@@ -1324,14 +1374,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   @objc func switchClaude(_ sender: NSMenuItem) {
     guard let name = sender.representedObject as? String else { return }
-    runAppAction("claude-use", value: name)
+    runMenuAction("claude-use", value: name)
   }
   @objc func switchCodex(_ sender: NSMenuItem) {
     guard let email = sender.representedObject as? String else { return }
-    runAppAction("codex-use", value: email)
+    runMenuAction("codex-use", value: email)
   }
   @objc func installShim() {
-    runAppAction("codex-shim-install")
+    runMenuAction("codex-shim-install")
+  }
+  func runMenuAction(_ action: String, value: String? = nil) {
+    runAppAction(action, value: value) { [weak self] result in
+      guard let self = self, let result = result else { return }
+      self.optimisticallyApplyAction(action, value: value, result: result)
+      if !result.ok || result.userActionRequired { self.showActionResult(result) }
+    }
+  }
+  func showActionResult(_ result: AppActionResult) {
+    let alert = NSAlert()
+    alert.messageText = "AI Acct Autopilot"
+    alert.informativeText = result.message
+    alert.alertStyle = result.ok ? .informational : .warning
+    alert.addButton(withTitle: "OK")
+    NSApp.activate(ignoringOtherApps: true)
+    alert.runModal()
   }
   func openUpdate(_ update: UpdateState) {
     if let url = updateURL(update) {
@@ -1624,7 +1690,7 @@ final class ManageAccountsWindowController: NSWindowController {
       }
       let row = accountLine(
         title: acct.name,
-        detail: accountDetail(left: acct.percentLeft, extra: acct.subscription),
+        detail: accountDetail(left: acct.percentLeft, extra: acct.subscription, usageMessage: acct.usageMessage),
         active: acct.active,
         warning: acct.reauth ? "re-auth needed" : (acct.recovery ? "recovered snapshot" : nil),
         actions: actions)
@@ -1665,7 +1731,7 @@ final class ManageAccountsWindowController: NSWindowController {
       }
       box.addArrangedSubview(accountLine(
         title: acct.email,
-        detail: accountDetail(left: acct.percentLeft, extra: acct.active ? s.codex.plan : nil),
+        detail: accountDetail(left: acct.percentLeft, extra: acct.active ? s.codex.plan : nil, usageMessage: nil),
         active: acct.active,
         warning: warning,
         actions: action))
@@ -1720,8 +1786,8 @@ final class ManageAccountsWindowController: NSWindowController {
     return row
   }
 
-  func accountDetail(left: Double?, extra: String?) -> String {
-    let pct = left == nil ? "usage unknown" : "\(Int(left!.rounded()))% left"
+  func accountDetail(left: Double?, extra: String?, usageMessage: String?) -> String {
+    let pct = left == nil ? (usageMessage ?? "usage unknown") : "\(Int(left!.rounded()))% left"
     if let extra = extra, !extra.isEmpty { return "\(pct) · \(extra)" }
     return pct
   }
@@ -1868,9 +1934,7 @@ final class ManageAccountsWindowController: NSWindowController {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: cfg.node)
     proc.arguments = [cfg.script, "app-diagnose", "--json"]
-    var env = ProcessInfo.processInfo.environment
-    env["AI_ACCT_MENUBAR_APP"] = Bundle.main.bundlePath
-    proc.environment = env
+    proc.environment = app?.toolEnvironment(cfg)
     let out = Pipe()
     proc.standardOutput = out
     proc.standardError = FileHandle.nullDevice

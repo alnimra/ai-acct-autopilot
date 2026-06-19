@@ -457,6 +457,30 @@ function worstUsed(rows) { // decision windows only: 5h + weekly
   return worst;
 }
 
+function usageErrorText(usage) {
+  const data = usage && usage.data;
+  if (data && typeof data === 'object' && data.error) {
+    return data.error.message || data.error.type || data.error.code || null;
+  }
+  return usage && usage.error || null;
+}
+function claudeUsageMessage(res, isActive = false) {
+  const usage = res && res.usage;
+  if (!usage) return 'usage unavailable';
+  if (usage.ok) return 'usage response missing 5h/weekly windows';
+  const err = usageErrorText(usage);
+  if (usage.status === 401) {
+    return isActive ? 'token stale — re-snapshotting from keychain' : 'token expired — refreshing saved OAuth credentials';
+  }
+  if (usage.status === 403) {
+    return err ? `usage blocked — ${err}` : 'usage blocked (HTTP 403)';
+  }
+  if (usage.status) {
+    return err ? `usage unavailable (HTTP ${usage.status}) — ${err}` : `usage unavailable (HTTP ${usage.status})`;
+  }
+  return err ? `usage probe failed — ${err}` : 'usage probe failed';
+}
+
 function pickTarget(report, activeName) {
   const candidates = [];
   for (const res of report.results) {
@@ -517,7 +541,7 @@ async function healActive(report, state) {
   const activeName = report.active;
   if (!activeName) return false;
   const active = report.results.find((r) => r.account === activeName);
-  if (!active || (active.usage && active.usage.ok)) return false;
+  if (!active || (active.usage && active.usage.ok) || !active.usage || active.usage.status !== 401) return false;
   if (state.lastHealTry && now() - state.lastHealTry < 5 * 60_000) return false;
   state.lastHealTry = now();
   const email = liveEmail();
@@ -537,6 +561,32 @@ function persistEmails(report) {
     if (!res.email || emailOf(res.account)) continue;
     try { fs.writeFileSync(path.join(DIR, `${res.account}.meta`), `email=${res.email}\n`, { mode: 0o600 }); } catch {}
   }
+}
+
+async function refreshStaleClaudeBlobs(state) {
+  const live = liveEmail();
+  let changed = false;
+  for (const name of accountNames()) {
+    if (isRecovery(name)) continue;
+    const mail = emailOf(name);
+    if (live && (name === live || (mail && mail === live))) continue; // keychain owns the active account
+    if (state.lastReport && name === state.lastReport.active) continue;
+    if (tokenStale(name)) changed = (await refreshBlob(name, state)) || changed;
+  }
+  return changed;
+}
+
+async function refreshClaudeUsageAuthFailures(report, state) {
+  let changed = false;
+  const active = report && report.active;
+  for (const res of (report && report.results) || []) {
+    if (isRecovery(res.account)) continue;
+    if (res.account === active) continue;
+    if (res.usage && res.usage.ok) continue;
+    if (!res.usage || res.usage.status !== 401) continue;
+    changed = (await refreshBlob(res.account, state)) || changed;
+  }
+  return changed;
 }
 
 // ════════════════════════ CODEX provider ════════════════════════
@@ -565,19 +615,26 @@ function codexSavedAccounts() {
 // (codex sessions are single-active: each login revokes the previous one).
 function codexProbeUsage(token) {
   return new Promise((resolve) => {
-    if (!token) { resolve({ ok: false, status: 0 }); return; }
-    https.get(WHAM_USAGE_URL, {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    if (!token) { finish({ ok: false, status: 0 }); return; }
+    const req = https.get(WHAM_USAGE_URL, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/json' }, timeout: 15_000,
     }, (res) => {
       let b = '';
       res.on('data', (c) => { b += c; });
       res.on('end', () => {
         let body = null; try { body = JSON.parse(b); } catch {}
-        if (res.statusCode !== 200 || !body) { resolve({ ok: false, status: res.statusCode, code: body && body.error && body.error.code }); return; }
-        resolve({ ok: true, status: 200, ...mapWham(body) });
+        if (res.statusCode !== 200 || !body) { finish({ ok: false, status: res.statusCode, code: body && body.error && body.error.code }); return; }
+        finish({ ok: true, status: 200, ...mapWham(body) });
       });
-    }).on('error', () => resolve({ ok: false, status: 0 }))
-      .on('timeout', function () { this.destroy(); });
+    });
+    req.on('error', () => finish({ ok: false, status: 0 }));
+    req.on('timeout', () => { finish({ ok: false, status: 0, code: 'timeout' }); req.destroy(); });
   });
 }
 function mapWham(body) {
@@ -594,16 +651,24 @@ function mapWham(body) {
 // Probe active + all saved codex accounts once per tick: email -> probe result.
 async function codexProbeAll() {
   const probes = new Map();
+  const jobs = [];
+  const seen = new Set();
+  const enqueue = (email, blob) => {
+    if (!email || seen.has(email)) return;
+    seen.add(email);
+    jobs.push([email, blob]);
+  };
   const activeBlob = readJson(CODEX_AUTH);
   const activeId = codexIdentity(activeBlob);
-  if (activeId && activeId.email) {
-    probes.set(activeId.email, await codexProbeUsage(activeBlob.tokens && activeBlob.tokens.access_token));
-  }
+  if (activeId && activeId.email) enqueue(activeId.email, activeBlob);
   for (const email of codexSavedAccounts()) {
-    if (probes.has(email)) continue;
-    const blob = readJson(path.join(CODEX_DIR, `${email}.json`));
-    probes.set(email, await codexProbeUsage(blob && blob.tokens && blob.tokens.access_token));
+    enqueue(email, readJson(path.join(CODEX_DIR, `${email}.json`)));
   }
+  const results = await Promise.all(jobs.map(async ([email, blob]) => [
+    email,
+    await codexProbeUsage(blob && blob.tokens && blob.tokens.access_token),
+  ]));
+  for (const [email, result] of results) probes.set(email, result);
   return probes;
 }
 
@@ -1164,8 +1229,19 @@ function appStateBase() {
 }
 async function collectAppState() {
   const state = appStateBase();
+  await refreshStaleClaudeBlobs(state);
   let report = await fetchUsage();
-  if (report) persistEmails(report);
+  if (report) {
+    persistEmails(report);
+    if (await refreshClaudeUsageAuthFailures(report, state)) {
+      const nextReport = await fetchUsage();
+      if (nextReport) { report = nextReport; persistEmails(report); }
+    }
+    if (await healActive(report, state)) {
+      const nextReport = await fetchUsage();
+      if (nextReport) { report = nextReport; persistEmails(report); }
+    }
+  }
   try { state.codexProbes = await codexProbeAll(); } catch {}
   try { state.update = await checkForUpdate(); } catch {}
   return buildAppState(report, state);
@@ -1506,12 +1582,16 @@ function buildAppState(report, state) {
   for (const res of (report && report.results) || []) {
     const rows = rowsFor(res);
     const worst = rows ? worstUsed(rows) : null;
+    const usageMessage = worst === null ? claudeUsageMessage(res, res.account === claude.active) : null;
+    const usageStatus = res.usage && typeof res.usage.status === 'number' ? res.usage.status : null;
     if (state.reauth.has(res.account)) amber(`claude ${res.account}: re-auth needed`);
+    else if (usageMessage && res.account === claude.active) red(`claude ${res.account}: ${usageMessage}`);
     claude.accounts.push({
       name: res.account, email: res.email || null, subscription: res.subscriptionType || null,
       active: res.account === claude.active, recovery: isRecovery(res.account),
       reauth: state.reauth.has(res.account), rows: rows || [],
       percentLeft: worst === null ? null : Math.round(100 - worst),
+      usageStatus, usageMessage,
       trend: trendFor(res.email || res.account) || null,
     });
   }
@@ -1746,17 +1826,17 @@ function render(report, state) {
 async function tick(state) {
   codexUsageCache = null;
   // 1. self-heal: refresh stale non-active claude blobs
-  const live = liveEmail();
-  for (const name of accountNames()) {
-    if (isRecovery(name)) continue;
-    const mail = emailOf(name);
-    if (live && (name === live || (mail && mail === live))) continue; // keychain owns the active account
-    if (state.lastReport && name === state.lastReport.active) continue;
-    if (tokenStale(name)) await refreshBlob(name, state);
-  }
+  await refreshStaleClaudeBlobs(state);
   // 2. poll usage (claude via claude-acct; codex via wham probes per account)
-  const report = await fetchUsage();
-  if (report) { state.lastReport = report; persistEmails(report); }
+  let report = await fetchUsage();
+  if (report) {
+    state.lastReport = report;
+    persistEmails(report);
+    if (await refreshClaudeUsageAuthFailures(report, state)) {
+      report = await fetchUsage();
+      if (report) { state.lastReport = report; persistEmails(report); }
+    }
+  }
   try { state.codexProbes = await codexProbeAll(); } catch {}
   // keep the active codex account's saved blob fresh (the live CLI rotates
   // tokens in auth.json; mirror them so switching away never strands it)
@@ -1771,7 +1851,10 @@ async function tick(state) {
   // 3. self-heal active (re-snapshot from keychain on 401), then autopilots
   if (report) {
     const healed = await healActive(report, state);
-    if (!healed) {
+    if (healed) {
+      const nextReport = await fetchUsage();
+      if (nextReport) { report = nextReport; state.lastReport = nextReport; persistEmails(nextReport); }
+    } else {
       await claudeAutopilot(report, state);
       if (state.justSwitched && state.justSwitched.startsWith('claude ')) {
         const nextReport = await fetchUsage();
