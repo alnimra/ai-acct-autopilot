@@ -488,6 +488,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   var manageAccountsWindow: ManageAccountsWindowController?
   weak var tickerItem: NSMenuItem?
   var ignoreSnapshotsBefore: Date?
+  var childStderr = Data()
 
   var autopilotEnabled: Bool {
     get { UserDefaults.standard.object(forKey: "autopilotEnabled") as? Bool ?? true }
@@ -637,22 +638,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     proc.environment = env
 
     let pipe = Pipe()
+    let errPipe = Pipe()
     proc.standardOutput = pipe
-    proc.standardError = FileHandle.nullDevice
+    proc.standardError = errPipe
+    lineBuffer = Data()
+    childStderr = Data()
     pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
       let data = handle.availableData
       if data.isEmpty { return }
       DispatchQueue.main.async { self?.consume(data) }
     }
+    errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+      let data = handle.availableData
+      if data.isEmpty { return }
+      DispatchQueue.main.async { self?.rememberChildStderr(data) }
+    }
     proc.terminationHandler = { [weak self] _ in
       DispatchQueue.main.async {
         guard let self = self, !self.quitting else { return }
         pipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
         if self.restarting {
           self.restarting = false
           self.spawnChild()
         } else {
-          // crashed / killed: show stale state, come back in 3s
+          let waitingOnFirstStatus = self.snapshot == nil
+            || self.snapshot?.readiness?.items.contains(where: { $0.id == "starting" }) == true
+          if waitingOnFirstStatus {
+            let code = proc.terminationStatus
+            let reason = proc.terminationReason == .uncaughtSignal ? "signal \(code)" : "exit \(code)"
+            let detail = self.childStderrTail()
+            if detail.isEmpty {
+              self.configError = "watcher stopped before first status (\(reason))"
+            } else {
+              self.configError = "watcher stopped before first status (\(reason)): \(detail)"
+            }
+            self.setStatusImage(claudeLeft: nil, codexLeft: nil, showCodex: true, threshold: 10, tooltip: self.configError)
+          }
           DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.spawnChild() }
         }
       }
@@ -664,6 +686,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       configError = "failed to launch node: \(error.localizedDescription)"
       setStatusImage(claudeLeft: nil, codexLeft: nil, showCodex: true, threshold: 10, tooltip: configError)
     }
+  }
+
+  func rememberChildStderr(_ data: Data) {
+    childStderr.append(data)
+    if childStderr.count > 8192 {
+      childStderr.removeSubrange(0..<(childStderr.count - 8192))
+    }
+  }
+
+  func childStderrTail() -> String {
+    guard let text = String(data: childStderr, encoding: .utf8) else { return "" }
+    let joined = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      .split(separator: "\n").suffix(3).joined(separator: " · ")
+    return joined.count > 600 ? String(joined.suffix(600)) : joined
   }
 
   func restartChild() {
@@ -689,6 +725,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       return
     }
     snapshot = snap
+    configError = nil
     updateStatusTitle()
     maybePromptUpdate(snap)
     manageAccountsWindow?.update(snapshot: snap)
@@ -1035,7 +1072,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       menu.addItem(viewItem(accountRow(dotColor: acct.active ? Palette.green : NSColor.quaternaryLabelColor,
         name: acct.email, nameColor: acct.active ? Palette.orange : Palette.text, meta: meta)))
       addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold)
-      if !acct.active && !acct.dead && acct.saved {
+      if acct.dead {
+        // revoked session: the only fix is a fresh login (codex-add overwrites
+        // the dead blob via an isolated home, leaving other sessions alive)
+        let item = actionItem("      re-login to \(acct.email)", #selector(reloginCodex(_:)))
+        item.representedObject = acct.email
+        menu.addItem(item)
+      } else if !acct.active && acct.saved {
         // supervised running sessions auto-resume on the new account; the
         // shim alert above covers the unshimmed case
         let item = actionItem("      switch to \(acct.email)", #selector(switchCodex(_:)))
@@ -1329,6 +1372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   @objc func switchCodex(_ sender: NSMenuItem) {
     guard let email = sender.representedObject as? String else { return }
     runAppAction("codex-use", value: email)
+  }
+  @objc func reloginCodex(_ sender: NSMenuItem) {
+    guard let email = sender.representedObject as? String else { return }
+    // codex-add runs an isolated overwrite-login: it revives the revoked
+    // account by signing back in (browser) without touching other sessions.
+    runAppAction("codex-add", value: email)
   }
   @objc func installShim() {
     runAppAction("codex-shim-install")
@@ -1657,6 +1706,11 @@ final class ManageAccountsWindowController: NSWindowController {
       else if acct.active && !acct.saved { warning = "not saved" }
       else { warning = nil }
       var action: [NSButton] = []
+      if acct.dead {
+        // revoked session — codex-add runs an isolated overwrite-login that
+        // signs back in (browser) without disturbing other live sessions
+        action.append(ActionButton("Re-login", actionName: "codex-add", value: acct.email, target: self, selector: #selector(runAction(_:))))
+      }
       if !acct.active && acct.saved {
         if !acct.dead {
           action.append(ActionButton("Switch", actionName: "codex-use", value: acct.email, target: self, selector: #selector(runAction(_:))))

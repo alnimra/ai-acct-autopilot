@@ -55,6 +55,8 @@ const WHAM_USAGE_URL = process.env.AI_ACCT_WHAM_URL || 'https://chatgpt.com/back
 const UPDATE_URL = process.env.AI_ACCT_UPDATE_URL || 'https://api.github.com/repos/alnimra/ai-acct-autopilot/releases/latest';
 const UPDATE_LATEST_URL = process.env.AI_ACCT_UPDATE_LATEST_URL || 'https://github.com/alnimra/ai-acct-autopilot/releases/latest';
 const UPDATE_CHECK_MAX_AGE_MS = Number(process.env.AI_ACCT_UPDATE_CACHE_MS || 6 * 60 * 60_000);
+const WHAM_TIMEOUT_RAW = Number(process.env.AI_ACCT_WHAM_TIMEOUT_MS || 15_000);
+const WHAM_TIMEOUT_MS = Number.isFinite(WHAM_TIMEOUT_RAW) ? Math.max(100, WHAM_TIMEOUT_RAW) : 15_000;
 const PS_BIN = process.env.AI_ACCT_PS_BIN || '/bin/ps';
 const LSOF_BIN = process.env.AI_ACCT_LSOF_BIN || '/usr/sbin/lsof';
 const PGREP_BIN = process.env.AI_ACCT_PGREP_BIN || '/usr/bin/pgrep';
@@ -566,18 +568,29 @@ function codexSavedAccounts() {
 function codexProbeUsage(token) {
   return new Promise((resolve) => {
     if (!token) { resolve({ ok: false, status: 0 }); return; }
-    https.get(WHAM_USAGE_URL, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' }, timeout: 15_000,
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const req = https.get(WHAM_USAGE_URL, {
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' }, timeout: WHAM_TIMEOUT_MS,
     }, (res) => {
       let b = '';
       res.on('data', (c) => { b += c; });
       res.on('end', () => {
         let body = null; try { body = JSON.parse(b); } catch {}
-        if (res.statusCode !== 200 || !body) { resolve({ ok: false, status: res.statusCode, code: body && body.error && body.error.code }); return; }
-        resolve({ ok: true, status: 200, ...mapWham(body) });
+        if (res.statusCode !== 200 || !body) { done({ ok: false, status: res.statusCode, code: body && body.error && body.error.code }); return; }
+        done({ ok: true, status: 200, ...mapWham(body) });
       });
-    }).on('error', () => resolve({ ok: false, status: 0 }))
-      .on('timeout', function () { this.destroy(); });
+      res.on('error', () => done({ ok: false, status: 0 }));
+    });
+    req.on('error', () => done({ ok: false, status: 0 }));
+    req.on('timeout', () => {
+      done({ ok: false, status: 0, code: 'timeout' });
+      req.destroy();
+    });
   });
 }
 function mapWham(body) {
@@ -594,16 +607,23 @@ function mapWham(body) {
 // Probe active + all saved codex accounts once per tick: email -> probe result.
 async function codexProbeAll() {
   const probes = new Map();
+  const work = [];
+  const enqueue = (email, token) => {
+    if (!email || probes.has(email) || work.some((w) => w.email === email)) return;
+    work.push({ email, token });
+  };
   const activeBlob = readJson(CODEX_AUTH);
   const activeId = codexIdentity(activeBlob);
   if (activeId && activeId.email) {
-    probes.set(activeId.email, await codexProbeUsage(activeBlob.tokens && activeBlob.tokens.access_token));
+    enqueue(activeId.email, activeBlob.tokens && activeBlob.tokens.access_token);
   }
   for (const email of codexSavedAccounts()) {
-    if (probes.has(email)) continue;
     const blob = readJson(path.join(CODEX_DIR, `${email}.json`));
-    probes.set(email, await codexProbeUsage(blob && blob.tokens && blob.tokens.access_token));
+    enqueue(email, blob && blob.tokens && blob.tokens.access_token);
   }
+  await Promise.all(work.map(async ({ email, token }) => {
+    probes.set(email, await codexProbeUsage(token));
+  }));
   return probes;
 }
 
@@ -841,7 +861,13 @@ if (argv[0] === 'codex-add') {
   (async () => {
     const { spawnSync } = require('node:child_process');
     const state = readJson(SHIM_STATE) || {};
-    const real = state.realTarget;
+    // Prefer the shim's recorded real binary; if the shim isn't installed yet
+    // (re-login is reachable from the UI before shim setup), fall back to the
+    // independently-detected stock codex binary so reviving a revoked account
+    // never depends on shim state. A shim wrapper without state is NOT used —
+    // running login through it would trigger codex-ensure (account switching).
+    const stockCodex = () => { const f = findRealCodex(); return f && !f.isShim ? f.binPath : null; };
+    const real = state.realTarget || stockCodex();
     if (!real) { console.error('codex shim state missing — run: ai-acct-autopilot codex-shim install'); process.exit(1); }
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-add-'));
     console.log('Opening codex login in an isolated home (current session stays alive).');
@@ -1570,6 +1596,30 @@ function buildAppState(report, state) {
   return app;
 }
 const menubarSnapshot = buildAppState;
+function writeMenubarSnapshot(snapshot) {
+  try { process.stdout.write(JSON.stringify(snapshot) + '\n'); } catch {}
+}
+function menubarStartingSnapshot(state) {
+  return {
+    v: 1, ts: new Date().toISOString(),
+    mode: NO_SWITCH ? 'monitor' : 'auto', threshold: THRESHOLD, interval: INTERVAL,
+    attention: 'amber',
+    alerts: [{ level: 'amber', text: 'Collecting account usage…' }],
+    claude: { ok: true, active: null, accounts: [] },
+    codex: { active: null, plan: null, accounts: [] },
+    readiness: {
+      status: 'amber',
+      primaryAction: null,
+      items: [{ id: 'starting', level: 'amber', text: 'Collecting account usage…', action: null }],
+      complete: false,
+    },
+    shim: null,
+    update: state.update || null,
+    stats: state.stats || null,
+    statsProgress: state.statsProgress || 'starting watcher…',
+    events: journalTail(5).slice().reverse(),
+  };
+}
 
 // ════════════════════════ render ════════════════════════
 function bar(used, width) {
@@ -1587,7 +1637,7 @@ function fmtLeft(used) {
 
 function render(report, state) {
   if (MENUBAR) {
-    try { process.stdout.write(JSON.stringify(menubarSnapshot(report, state)) + '\n'); } catch {}
+    writeMenubarSnapshot(menubarSnapshot(report, state));
     return;
   }
   const cols = Math.max(72, process.stdout.columns || 100);
@@ -1963,6 +2013,7 @@ async function main() {
       try { process.kill(parentPid, 0); } catch { process.exit(0); }
     }, 2000).unref();
   }
+  if (MENUBAR) writeMenubarSnapshot(menubarStartingSnapshot(state));
 
   runStats();                              // background; rerenders when done
   setInterval(runStats, 5 * 60_000);       // refresh stats every 5 min

@@ -127,7 +127,9 @@ const server = https.createServer({ key: fs.readFileSync(process.argv[2]), cert:
       return;
     }
     if (req.url.startsWith('/wham')) {
-      const m = (req.headers.authorization || '').match(/^Bearer tok-(\\d+)$/);
+      const auth = req.headers.authorization || '';
+      if (/tok-hang/.test(auth)) return;
+      const m = auth.match(/^Bearer tok-(\\d+)$/);
       if (m) {
         const used = Number(m[1]);
         const reply = () => {
@@ -665,8 +667,28 @@ exit 0`);
     r = runCli(sb2, ['codex-add']);
     check('failed login imports nothing', r.status === 1 && r.stderr.includes('nothing imported'), r.stderr);
     const sb3 = sandbox('s17c');
-    r = runCli(sb3, ['codex-add']);
+    // pin the codex-binary probe to a missing path: with neither shim state nor
+    // a detectable stock binary, codex-add must error (and must not pick up the
+    // host's real /opt/homebrew/bin/codex)
+    r = runCli(sb3, ['codex-add'], { AI_ACCT_CODEX_BIN: path.join(sb3.home, 'no-codex-here') });
     check('codex-add without shim state errors', r.status === 1 && r.stderr.includes('shim state missing'));
+
+    // revive a revoked account with NO shim installed: codex-add falls back to
+    // the independently-detected stock binary and overwrites the dead blob.
+    const sbRevive = sandbox('s17e');
+    const stockLogin = sbRevive.sh('stockcodex', `case "$1" in
+  login) cat > "$CODEX_HOME/auth.json" <<EOF
+{"tokens":{"id_token":"${jwt('milan@bily.ai')}","access_token":"tok-20","refresh_token":"rt-revived"}}
+EOF
+    exit 0;;
+esac
+echo codex; exit 0`);
+    sbRevive.write('.codex/accounts/milan@bily.ai.json', codexBlob('milan@bily.ai', 'tok-revoked'));
+    r = runCli(sbRevive, ['app-action', 'codex-add', 'milan@bily.ai', '--json'], { AI_ACCT_CODEX_BIN: stockLogin });
+    const revived = JSON.parse(r.stdout);
+    check('codex-add revives a dead account without shim state via stock binary', r.status === 0 && revived.ok
+      && revived.data && revived.data.email === 'milan@bily.ai'
+      && sbRevive.json('.codex/accounts/milan@bily.ai.json').tokens.access_token === 'tok-20', r.stdout + r.stderr);
   }
 
   // ── S18: interactive loop — ANSI render path + bounded clean exit
@@ -708,19 +730,23 @@ exit 0`);
     const child = spawn(process.execPath, [BIN, '--menubar', '--interval', '300', '--no-switch'], { env });
     let out = '';
     child.stdout.on('data', (c) => { out += c; });
+    const parseSnaps = () => out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
     const lineCount = () => out.split('\n').filter(Boolean).length;
     const waitFor = (cond, ms) => new Promise((res) => {
       const t0 = Date.now();
       const iv = setInterval(() => { if (cond() || Date.now() - t0 > ms) { clearInterval(iv); res(); } }, 50);
     });
-    await waitFor(() => lineCount() >= 1, 15_000);
+    await waitFor(() => parseSnaps().some((s) => s && s.claude && s.claude.active === 'a@test'), 15_000);
+    const startup = parseSnaps()[0];
     await new Promise((r) => setTimeout(r, 1500));   // let the stats rerender land
     const before = lineCount();
     child.kill('SIGUSR2');
     const code = await new Promise((r) => { child.on('exit', (c) => r(c)); setTimeout(() => { child.kill('SIGKILL'); r(-1); }, 30_000); });
-    const snaps = out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+    const snaps = parseSnaps();
     check('menubar feed: clean exit, every line is JSON, no ANSI', code === 0 && snaps.length > 0 && snaps.every(Boolean) && !out.includes('\x1b['), out.slice(0, 200));
-    const s = snaps[0];
+    check('menubar feed: emits startup snapshot immediately', !!startup && startup.readiness && startup.readiness.status === 'amber'
+      && startup.readiness.items.some((i) => i.id === 'starting'), JSON.stringify(startup));
+    const s = snaps.find((snap) => snap && snap.claude && snap.claude.active === 'a@test');
     check('menubar feed: claude accounts mapped with % left', !!s && s.claude.active === 'a@test'
       && s.claude.accounts.some((a) => a.name === 'b@test' && a.percentLeft === 90 && !a.active), JSON.stringify(s && s.claude));
     check('menubar feed: codex accounts probed and mapped', !!s && s.codex.active === 'cx-a@test'
@@ -751,8 +777,22 @@ exit 0`);
     child.kill('SIGUSR2');
     const code = await new Promise((r) => { child.on('exit', (c) => r(c)); setTimeout(() => { child.kill('SIGKILL'); r(-1); }, 12_000); });
     const snaps = out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
-    check('menubar feed: SIGUSR2 during in-flight tick queues another snapshot', code === 0 && snaps.filter(Boolean).length >= 2,
+    check('menubar feed: SIGUSR2 during in-flight tick queues another snapshot', code === 0 && snaps.filter(Boolean).length >= 3,
       `code=${code} count=${snaps.filter(Boolean).length} out=${out.slice(0, 200)}`);
+  }
+
+  // ── S19c: a hanging Codex usage socket times out instead of blocking render
+  {
+    const sb = sandbox('s19c');
+    standardWorld(sb, { codexActiveTok: 'tok-hang' });
+    const t0 = Date.now();
+    const r = runCli(sb, ['--once', '--menubar', '--no-switch'], { AI_ACCT_WHAM_TIMEOUT_MS: '200' }, { timeout: 5000 });
+    const elapsed = Date.now() - t0;
+    const snap = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop() || 'null');
+    check('menubar feed: hanging codex probe times out and still renders', r.status === 0 && elapsed < 5000
+      && snap.codex.accounts.some((a) => a.email === 'cx-a@test' && a.percentLeft === null)
+      && snap.codex.accounts.some((a) => a.email === 'cx-b@test' && a.percentLeft === 90),
+      `status=${r.status} elapsed=${elapsed} out=${r.stdout} err=${r.stderr}`);
   }
 
   // ── S19b: native app JSON contract used by the Manage Accounts surface
