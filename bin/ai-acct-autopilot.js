@@ -1262,7 +1262,7 @@ function appActionResult({ action, provider = null, ok, message, changed = false
   };
 }
 function resultFromRun(action, provider, r, successMessage, { changed = true, needsRefresh = true, userActionRequired = false } = {}) {
-  if (r.ok) return appActionResult({ action, provider, ok: true, message: successMessage, changed, needsRefresh, stderr: r.stderr });
+  if (r.ok) return appActionResult({ action, provider, ok: true, message: successMessage, changed, needsRefresh, userActionRequired, stderr: r.stderr });
   return appActionResult({
     action, provider, ok: false,
     message: r.timedOut ? 'Action timed out. Try again.' : 'Action failed.',
