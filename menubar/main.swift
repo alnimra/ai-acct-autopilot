@@ -1064,7 +1064,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       menu.addItem(viewItem(accountRow(dotColor: acct.active ? Palette.green : NSColor.quaternaryLabelColor,
         name: acct.name, nameColor: acct.active ? Palette.orange : Palette.text, meta: meta)))
       addUsageRows(acct.rows, trend: acct.trend, threshold: s.threshold, emptyMessage: acct.usageMessage)
-      if !acct.active && !acct.recovery {
+      if acct.reauth && !acct.recovery {
+        let item = actionItem("      re-auth \(acct.name)", #selector(reauthClaude(_:)))
+        item.representedObject = acct.name
+        menu.addItem(item)
+      } else if !acct.active && !acct.recovery {
         let item = actionItem("      switch to \(acct.name)", #selector(switchClaude(_:)))
         item.representedObject = acct.name
         menu.addItem(item)
@@ -1376,6 +1380,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     guard let name = sender.representedObject as? String else { return }
     runMenuAction("claude-use", value: name)
   }
+  @objc func reauthClaude(_ sender: NSMenuItem) {
+    guard let name = sender.representedObject as? String else { return }
+    runMenuAction("claude-add", value: name)
+  }
   @objc func switchCodex(_ sender: NSMenuItem) {
     guard let email = sender.representedObject as? String else { return }
     runMenuAction("codex-use", value: email)
@@ -1684,8 +1692,14 @@ final class ManageAccountsWindowController: NSWindowController {
       var actions: [NSButton] = []
       // Claude's app-state list is the saved-account list plus recovery
       // snapshots; active and recovery rows intentionally have no Remove.
+      if !acct.recovery {
+        if acct.reauth {
+          actions.append(ActionButton("Re-auth", actionName: "claude-add", value: acct.name, target: self, selector: #selector(runAction(_:))))
+        } else if !acct.active {
+          actions.append(ActionButton("Switch", actionName: "claude-use", value: acct.name, target: self, selector: #selector(runAction(_:))))
+        }
+      }
       if !acct.active && !acct.recovery {
-        actions.append(ActionButton("Switch", actionName: "claude-use", value: acct.name, target: self, selector: #selector(runAction(_:))))
         actions.append(ActionButton("Remove", actionName: "claude-remove", value: acct.name, target: self, selector: #selector(confirmRemove(_:))))
       }
       let row = accountLine(

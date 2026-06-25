@@ -64,6 +64,7 @@ try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); j.active = active; fs
 NODE
   exit 0;;
   save) echo "save $2" >> "${home}/fixtures/calls.log"; exit 0;;
+  add) echo "add $2" >> "${home}/fixtures/calls.log"; exit 0;;
 esac
 exit 0`);
   sh('osascript', `echo "$@" >> "${home}/fixtures/notify.log"; exit 0`);
@@ -874,6 +875,12 @@ EOF`);
       && sb.read('fixtures/calls.log').includes('use b@test')
       && sb.journal().some((e) => e.provider === 'claude' && e.event === 'switch'
         && e.from === 'a@test' && e.to === 'b@test' && e.reason === 'manual app-action'), r.stdout + r.stderr);
+
+    r = runCli(sb, ['app-action', 'claude-add', 'b@test', '--json']);
+    action = JSON.parse(r.stdout);
+    check('app-action claude-add supports Claude re-auth from app UI', r.status === 0 && action.ok
+      && action.needsRefresh && action.userActionRequired
+      && sb.read('fixtures/calls.log').includes('add b@test'), r.stdout + r.stderr);
 
     sb.write('fixtures/calls.log', '');
     sb.write('fixtures/usage.json', JSON.stringify({ active: 'a@test', results: [
