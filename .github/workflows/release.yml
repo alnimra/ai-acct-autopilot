@@ -64,10 +64,14 @@ jobs:
           security import "$CERT_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
-          xcrun notarytool store-credentials release-notary \
+          if ! xcrun notarytool store-credentials release-notary \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD"
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"; then
+            echo "::warning::Apple notary credentials could not be validated — skipping public DMG"
+            echo "DMG_SIGNING_READY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
       - name: build notarized DMG
         if: startsWith(github.ref, 'refs/tags/') && env.DMG_SIGNING_READY == 'true'
         run: npm run build:dmg -- --notary-profile release-notary
